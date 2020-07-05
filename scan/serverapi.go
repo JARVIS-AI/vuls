@@ -1,26 +1,7 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2016  Future Corporation , Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 package scan
 
 import (
-	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -31,13 +12,20 @@ import (
 	"github.com/future-architect/vuls/models"
 	"github.com/future-architect/vuls/report"
 	"github.com/future-architect/vuls/util"
+	"golang.org/x/xerrors"
+)
+
+const (
+	scannedViaRemote = "remote"
+	scannedViaLocal  = "local"
+	scannedViaPseudo = "pseudo"
 )
 
 var (
-	errOSFamilyHeader      = errors.New("X-Vuls-OS-Family header is required")
-	errOSReleaseHeader     = errors.New("X-Vuls-OS-Release header is required")
-	errKernelVersionHeader = errors.New("X-Vuls-Kernel-Version header is required")
-	errServerNameHeader    = errors.New("X-Vuls-Server-Name header is required")
+	errOSFamilyHeader      = xerrors.New("X-Vuls-OS-Family header is required")
+	errOSReleaseHeader     = xerrors.New("X-Vuls-OS-Release header is required")
+	errKernelVersionHeader = xerrors.New("X-Vuls-Kernel-Version header is required")
+	errServerNameHeader    = xerrors.New("X-Vuls-Server-Name header is required")
 )
 
 var servers, errServers []osTypeInterface
@@ -49,6 +37,7 @@ type osTypeInterface interface {
 	setDistro(string, string)
 	getDistro() config.Distro
 	detectPlatform()
+	detectIPSs()
 	getPlatform() models.Platform
 
 	checkScanMode() error
@@ -57,6 +46,8 @@ type osTypeInterface interface {
 
 	preCure() error
 	postScan() error
+	scanWordPress() error
+	scanLibraries() error
 	scanPackages() error
 	convertToModel() models.ScanResult
 
@@ -121,7 +112,7 @@ func detectOS(c config.ServerInfo) (osType osTypeInterface) {
 	itsMe, osType, fatalErr = detectDebianWithRetry(c)
 	if fatalErr != nil {
 		osType.setErrs([]error{
-			fmt.Errorf("Failed to detect OS: %s", fatalErr)})
+			xerrors.Errorf("Failed to detect OS: %w", fatalErr)})
 		return
 	}
 
@@ -151,7 +142,7 @@ func detectOS(c config.ServerInfo) (osType osTypeInterface) {
 	}
 
 	//TODO darwin https://github.com/mizzy/specinfra/blob/master/lib/specinfra/helper/detect_os/darwin.rb
-	osType.setErrs([]error{fmt.Errorf("Unknown OS Type")})
+	osType.setErrs([]error{xerrors.New("Unknown OS Type")})
 	return
 }
 
@@ -178,18 +169,28 @@ func PrintSSHableServerNames() bool {
 
 // InitServers detect the kind of OS distribution of target servers
 func InitServers(timeoutSec int) error {
+	// use global servers, errServers when scan containers
 	servers, errServers = detectServerOSes(timeoutSec)
 	if len(servers) == 0 {
-		return fmt.Errorf("No scannable servers")
+		return xerrors.New("No scannable base servers")
 	}
 
-	actives, inactives := detectContainerOSes(timeoutSec)
+	// scan additional servers
+	var actives, inactives []osTypeInterface
+	oks, errs := detectContainerOSes(timeoutSec)
+	actives = append(actives, oks...)
+	inactives = append(inactives, errs...)
+
 	if config.Conf.ContainersOnly {
 		servers = actives
 		errServers = inactives
 	} else {
 		servers = append(servers, actives...)
 		errServers = append(errServers, inactives...)
+	}
+
+	if len(servers) == 0 {
+		return xerrors.New("No scannable servers")
 	}
 	return nil
 }
@@ -215,7 +216,7 @@ func detectServerOSes(timeoutSec int) (servers, errServers []osTypeInterface) {
 		case res := <-osTypeChan:
 			if 0 < len(res.getErrs()) {
 				errServers = append(errServers, res)
-				util.Log.Errorf("(%d/%d) Failed: %s, err: %s",
+				util.Log.Errorf("(%d/%d) Failed: %s, err: %+v",
 					i+1, len(config.Conf.Servers),
 					res.getServerInfo().ServerName,
 					res.getErrs())
@@ -241,7 +242,7 @@ func detectServerOSes(timeoutSec int) (servers, errServers []osTypeInterface) {
 					u := &unknown{}
 					u.setServerInfo(sInfo)
 					u.setErrs([]error{
-						fmt.Errorf("Timed out"),
+						xerrors.New("Timed out"),
 					})
 					errServers = append(errServers, u)
 					util.Log.Errorf("(%d/%d) Timed out: %s",
@@ -279,7 +280,7 @@ func detectContainerOSes(timeoutSec int) (actives, inactives []osTypeInterface) 
 				sinfo := osi.getServerInfo()
 				if 0 < len(osi.getErrs()) {
 					inactives = append(inactives, osi)
-					util.Log.Errorf("Failed: %s err: %s", sinfo.ServerName, osi.getErrs())
+					util.Log.Errorf("Failed: %s err: %+v", sinfo.ServerName, osi.getErrs())
 					continue
 				}
 				actives = append(actives, osi)
@@ -301,11 +302,9 @@ func detectContainerOSes(timeoutSec int) (actives, inactives []osTypeInterface) 
 					u := &unknown{}
 					u.setServerInfo(sInfo)
 					u.setErrs([]error{
-						fmt.Errorf("Timed out"),
+						xerrors.New("Timed out"),
 					})
-					inactives = append(inactives)
 					util.Log.Errorf("Timed out: %s", servername)
-
 				}
 			}
 		}
@@ -321,8 +320,8 @@ func detectContainerOSesOnServer(containerHost osTypeInterface) (oses []osTypeIn
 
 	running, err := containerHost.runningContainers()
 	if err != nil {
-		containerHost.setErrs([]error{fmt.Errorf(
-			"Failed to get running containers on %s. err: %s",
+		containerHost.setErrs([]error{xerrors.Errorf(
+			"Failed to get running containers on %s. err: %w",
 			containerHost.getServerInfo().ServerName, err)})
 		return append(oses, containerHost)
 	}
@@ -353,8 +352,8 @@ func detectContainerOSesOnServer(containerHost osTypeInterface) (oses []osTypeIn
 
 	exitedContainers, err := containerHost.exitedContainers()
 	if err != nil {
-		containerHost.setErrs([]error{fmt.Errorf(
-			"Failed to get exited containers on %s. err: %s",
+		containerHost.setErrs([]error{xerrors.Errorf(
+			"Failed to get exited containers on %s. err: %w",
 			containerHost.getServerInfo().ServerName, err)})
 		return append(oses, containerHost)
 	}
@@ -388,7 +387,7 @@ func detectContainerOSesOnServer(containerHost osTypeInterface) (oses []osTypeIn
 		}
 	}
 	if 0 < len(exited) || 0 < len(unknown) {
-		containerHost.setErrs([]error{fmt.Errorf(
+		containerHost.setErrs([]error{xerrors.Errorf(
 			"Some containers on %s are exited or unknown. exited: %s, unknown: %s",
 			containerHost.getServerInfo().ServerName, exited, unknown)})
 		return append(oses, containerHost)
@@ -400,7 +399,7 @@ func detectContainerOSesOnServer(containerHost osTypeInterface) (oses []osTypeIn
 func CheckScanModes() error {
 	for _, s := range servers {
 		if err := s.checkScanMode(); err != nil {
-			return fmt.Errorf("servers.%s.scanMode err: %s",
+			return xerrors.Errorf("servers.%s.scanMode err: %w",
 				s.getServerInfo().GetServerName(), err)
 		}
 	}
@@ -455,10 +454,32 @@ func detectPlatforms(timeoutSec int) {
 	return
 }
 
+// DetectIPSs detects the IPS of each servers.
+func DetectIPSs(timeoutSec int) {
+	detectIPSs(timeoutSec)
+	for i, s := range servers {
+		if !s.getServerInfo().IsContainer() {
+			util.Log.Infof("(%d/%d) %s has %d IPS integration",
+				i+1, len(servers),
+				s.getServerInfo().ServerName,
+				len(s.getServerInfo().IPSIdentifiers),
+			)
+		}
+	}
+}
+
+func detectIPSs(timeoutSec int) {
+	parallelExec(func(o osTypeInterface) error {
+		o.detectIPSs()
+		// Logging only if IPS can not be specified
+		return nil
+	}, timeoutSec)
+}
+
 // Scan scan
 func Scan(timeoutSec int) error {
 	if len(servers) == 0 {
-		return fmt.Errorf("No server defined. Check the configuration")
+		return xerrors.New("No server defined. Check the configuration")
 	}
 
 	if err := setupChangelogCache(); err != nil {
@@ -476,7 +497,13 @@ func Scan(timeoutSec int) error {
 	if err != nil {
 		return err
 	}
-	return scanVulns(dir, scannedAt, timeoutSec)
+
+	results, err := GetScanResults(scannedAt, timeoutSec)
+	if err != nil {
+		return err
+	}
+
+	return writeScanResults(dir, results)
 }
 
 // ViaHTTP scans servers by HTTP header and body
@@ -535,8 +562,12 @@ func ViaHTTP(header http.Header, body string) (models.ScanResult, error) {
 		osType = &centos{
 			redhatBase: redhatBase{base: base},
 		}
+	case config.Amazon:
+		osType = &amazon{
+			redhatBase: redhatBase{base: base},
+		}
 	default:
-		return models.ScanResult{}, fmt.Errorf("Server mode for %s is not implemented yet", family)
+		return models.ScanResult{}, xerrors.Errorf("Server mode for %s is not implemented yet", family)
 	}
 
 	installedPackages, srcPackages, err := osType.parseInstalledPackages(body)
@@ -583,24 +614,34 @@ func setupChangelogCache() error {
 	return nil
 }
 
-func scanVulns(jsonDir string, scannedAt time.Time, timeoutSec int) error {
-	var results models.ScanResults
+// GetScanResults returns ScanResults from
+func GetScanResults(scannedAt time.Time, timeoutSec int) (results models.ScanResults, err error) {
 	parallelExec(func(o osTypeInterface) (err error) {
-		if err = o.preCure(); err != nil {
-			return err
+		if !(config.Conf.LibsOnly || config.Conf.WordPressOnly) {
+			if err = o.preCure(); err != nil {
+				return err
+			}
+			if err = o.scanPackages(); err != nil {
+				return err
+			}
+			if err = o.postScan(); err != nil {
+				return err
+			}
 		}
-		if err = o.scanPackages(); err != nil {
-			return err
+		if err = o.scanWordPress(); err != nil {
+			return xerrors.Errorf("Failed to scan WordPress: %w", err)
 		}
-		return o.postScan()
+		if err = o.scanLibraries(); err != nil {
+			return xerrors.Errorf("Failed to scan Library: %w", err)
+		}
+		return nil
 	}, timeoutSec)
 
 	hostname, _ := os.Hostname()
-	ipv4s, ipv6s, err := ip()
+	ipv4s, ipv6s, err := util.IP()
 	if err != nil {
-		util.Log.Errorf("Failed to fetch scannedIPs: %s", err)
+		util.Log.Errorf("Failed to fetch scannedIPs. err: %+v", err)
 	}
-
 	for _, s := range append(servers, errServers...) {
 		r := s.convertToModel()
 		r.ScannedAt = scannedAt
@@ -611,52 +652,38 @@ func scanVulns(jsonDir string, scannedAt time.Time, timeoutSec int) error {
 		r.ScannedIPv6Addrs = ipv6s
 		r.Config.Scan = config.Conf
 		results = append(results, r)
-	}
 
+		if 0 < len(r.Warnings) {
+			util.Log.Warnf("Some warnings occurred during scanning on %s. Please fix the warnings to get a useful information. Execute configtest subcommand before scanning to know the cause of the warnings. warnings: %v",
+				r.ServerName, r.Warnings)
+		}
+	}
+	return results, nil
+}
+
+func writeScanResults(jsonDir string, results models.ScanResults) error {
 	config.Conf.FormatJSON = true
 	ws := []report.ResultWriter{
 		report.LocalFileWriter{CurrentDir: jsonDir},
 	}
 	for _, w := range ws {
 		if err := w.Write(results...); err != nil {
-			return fmt.Errorf("Failed to write summary report: %s", err)
+			return xerrors.Errorf("Failed to write summary report: %s", err)
 		}
 	}
 
 	report.StdoutWriter{}.WriteScanSummary(results...)
-	return nil
-}
 
-// ip returns scanner network ip addresses
-func ip() (ipv4Addrs []string, ipv6Addrs []string, err error) {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil, nil, err
-	}
-	for _, i := range ifaces {
-		addrs, _ := i.Addrs()
-		for _, addr := range addrs {
-			var ip net.IP
-			switch v := addr.(type) {
-			case *net.IPNet:
-				ip = v.IP
-			case *net.IPAddr:
-				ip = v.IP
-			}
-
-			// only global unicast address
-			if !ip.IsGlobalUnicast() {
-				continue
-			}
-
-			if ok := ip.To4(); ok != nil {
-				ipv4Addrs = append(ipv4Addrs, ip.String())
-			} else {
-				ipv6Addrs = append(ipv6Addrs, ip.String())
-			}
+	errServerNames := []string{}
+	for _, r := range results {
+		if 0 < len(r.Errors) {
+			errServerNames = append(errServerNames, r.ServerName)
 		}
 	}
-	return ipv4Addrs, ipv6Addrs, nil
+	if 0 < len(errServerNames) {
+		return fmt.Errorf("An error occurred on %s", errServerNames)
+	}
+	return nil
 }
 
 // EnsureResultDir ensures the directory for scan results
@@ -670,20 +697,20 @@ func EnsureResultDir(scannedAt time.Time) (currentDir string, err error) {
 	}
 	jsonDir := filepath.Join(resultsDir, jsonDirName)
 	if err := os.MkdirAll(jsonDir, 0700); err != nil {
-		return "", fmt.Errorf("Failed to create dir: %s", err)
+		return "", xerrors.Errorf("Failed to create dir: %w", err)
 	}
 
 	symlinkPath := filepath.Join(resultsDir, "current")
 	if _, err := os.Lstat(symlinkPath); err == nil {
 		if err := os.Remove(symlinkPath); err != nil {
-			return "", fmt.Errorf(
-				"Failed to remove symlink. path: %s, err: %s", symlinkPath, err)
+			return "", xerrors.Errorf(
+				"Failed to remove symlink. path: %s, err: %w", symlinkPath, err)
 		}
 	}
 
 	if err := os.Symlink(jsonDir, symlinkPath); err != nil {
-		return "", fmt.Errorf(
-			"Failed to create symlink: path: %s, err: %s", symlinkPath, err)
+		return "", xerrors.Errorf(
+			"Failed to create symlink: path: %s, err: %w", symlinkPath, err)
 	}
 	return jsonDir, nil
 }

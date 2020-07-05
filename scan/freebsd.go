@@ -1,30 +1,13 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2016  Future Corporation , Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 package scan
 
 import (
-	"fmt"
 	"net"
 	"strings"
 
 	"github.com/future-architect/vuls/config"
 	"github.com/future-architect/vuls/models"
 	"github.com/future-architect/vuls/util"
+	"golang.org/x/xerrors"
 )
 
 // inherit OsTypeInterface
@@ -69,7 +52,7 @@ func detectFreebsd(c config.ServerInfo) (itsMe bool, bsd osTypeInterface) {
 
 func (o *bsd) checkScanMode() error {
 	if o.getServerInfo().Mode.IsOffline() {
-		return fmt.Errorf("Remove offline scan mode, FreeBSD needs internet connection")
+		return xerrors.New("Remove offline scan mode, FreeBSD needs internet connection")
 	}
 	return nil
 }
@@ -101,7 +84,7 @@ func (o *bsd) postScan() error {
 func (o *bsd) detectIPAddr() (err error) {
 	r := o.exec("/sbin/ifconfig", noSudo)
 	if !r.isSuccess() {
-		return fmt.Errorf("Failed to detect IP address: %v", r)
+		return xerrors.Errorf("Failed to detect IP address: %v", r)
 	}
 	o.ServerInfo.IPv4Addrs, o.ServerInfo.IPv6Addrs = o.parseIfconfig(r.Stdout)
 	return nil
@@ -143,12 +126,13 @@ func (o *bsd) scanPackages() error {
 		Version: version,
 	}
 
-	rebootRequired, err := o.rebootRequired()
+	o.Kernel.RebootRequired, err = o.rebootRequired()
 	if err != nil {
-		o.log.Errorf("Failed to detect the kernel reboot required: %s", err)
-		return err
+		err = xerrors.Errorf("Failed to detect the kernel reboot required: %w", err)
+		o.log.Warnf("err: %+v", err)
+		o.warns = append(o.warns, err)
+		// Only warning this error
 	}
-	o.Kernel.RebootRequired = rebootRequired
 
 	packs, err := o.scanInstalledPackages()
 	if err != nil {
@@ -173,7 +157,7 @@ func (o *bsd) parseInstalledPackages(string) (models.Packages, models.SrcPackage
 func (o *bsd) rebootRequired() (bool, error) {
 	r := o.exec("freebsd-version -k", noSudo)
 	if !r.isSuccess() {
-		return false, fmt.Errorf("Failed to SSH: %s", r)
+		return false, xerrors.Errorf("Failed to SSH: %s", r)
 	}
 	return o.Kernel.Release != strings.TrimSpace(r.Stdout), nil
 }
@@ -182,7 +166,7 @@ func (o *bsd) scanInstalledPackages() (models.Packages, error) {
 	cmd := util.PrependProxyEnv("pkg version -v")
 	r := o.exec(cmd, noSudo)
 	if !r.isSuccess() {
-		return nil, fmt.Errorf("Failed to SSH: %s", r)
+		return nil, xerrors.Errorf("Failed to SSH: %s", r)
 	}
 	return o.parsePkgVersion(r.Stdout), nil
 }
@@ -192,20 +176,20 @@ func (o *bsd) scanUnsecurePackages() (models.VulnInfos, error) {
 	cmd := "rm -f " + vulndbPath
 	r := o.exec(cmd, noSudo)
 	if !r.isSuccess(0) {
-		return nil, fmt.Errorf("Failed to SSH: %s", r)
+		return nil, xerrors.Errorf("Failed to SSH: %s", r)
 	}
 
 	cmd = util.PrependProxyEnv("pkg audit -F -r -f " + vulndbPath)
 	r = o.exec(cmd, noSudo)
 	if !r.isSuccess(0, 1) {
-		return nil, fmt.Errorf("Failed to SSH: %s", r)
+		return nil, xerrors.Errorf("Failed to SSH: %s", r)
 	}
 	if r.ExitStatus == 0 {
 		// no vulnerabilities
 		return nil, nil
 	}
 
-	var packAdtRslt []pkgAuditResult
+	packAdtRslt := []pkgAuditResult{}
 	blocks := o.splitIntoBlocks(r.Stdout)
 	for _, b := range blocks {
 		name, cveIDs, vulnID := o.parseBlock(b)
@@ -214,7 +198,7 @@ func (o *bsd) scanUnsecurePackages() (models.VulnInfos, error) {
 		}
 		pack, found := o.Packages[name]
 		if !found {
-			return nil, fmt.Errorf("Vulnerable package: %s is not found", name)
+			return nil, xerrors.Errorf("Vulnerable package: %s is not found", name)
 		}
 		packAdtRslt = append(packAdtRslt, pkgAuditResult{
 			pack: pack,
@@ -247,9 +231,9 @@ func (o *bsd) scanUnsecurePackages() (models.VulnInfos, error) {
 			})
 		}
 
-		affected := models.PackageStatuses{}
+		affected := models.PackageFixStatuses{}
 		for name := range packs {
-			affected = append(affected, models.PackageStatus{
+			affected = append(affected, models.PackageFixStatus{
 				Name: name,
 			})
 		}

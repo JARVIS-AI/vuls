@@ -1,20 +1,3 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2018  Future Corporation , Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 package report
 
 import (
@@ -22,8 +5,7 @@ import (
 	"strings"
 
 	syslog "github.com/RackSec/srslog"
-
-	"github.com/pkg/errors"
+	"golang.org/x/xerrors"
 
 	"github.com/future-architect/vuls/config"
 	"github.com/future-architect/vuls/models"
@@ -40,13 +22,13 @@ func (w SyslogWriter) Write(rs ...models.ScanResult) (err error) {
 
 	sysLog, err := syslog.Dial(conf.Protocol, raddr, severity|facility, conf.Tag)
 	if err != nil {
-		return errors.Wrap(err, "Failed to initialize syslog client")
+		return xerrors.Errorf("Failed to initialize syslog client: %w", err)
 	}
 
 	for _, r := range rs {
 		messages := w.encodeSyslog(r)
 		for _, m := range messages {
-			if _, err = fmt.Fprintf(sysLog, m); err != nil {
+			if _, err = fmt.Fprint(sysLog, m); err != nil {
 				return err
 			}
 		}

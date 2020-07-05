@@ -1,20 +1,3 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2016  Future Corporation , Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 package commands
 
 import (
@@ -23,10 +6,12 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/aquasecurity/trivy/pkg/utils"
 	c "github.com/future-architect/vuls/config"
 	"github.com/future-architect/vuls/exploit"
 	"github.com/future-architect/vuls/gost"
 	"github.com/future-architect/vuls/models"
+	"github.com/future-architect/vuls/msf"
 	"github.com/future-architect/vuls/oval"
 	"github.com/future-architect/vuls/report"
 	"github.com/future-architect/vuls/util"
@@ -36,11 +21,12 @@ import (
 
 // TuiCmd is Subcommand of host discovery mode
 type TuiCmd struct {
-	configPath  string
-	cveDict     c.GoCveDictConf
-	ovalDict    c.GovalDictConf
-	gostConf    c.GostConf
-	exploitConf c.ExploitConf
+	configPath     string
+	cveDict        c.GoCveDictConf
+	ovalDict       c.GovalDictConf
+	gostConf       c.GostConf
+	exploitConf    c.ExploitConf
+	metasploitConf c.MetasploitConf
 }
 
 // Name return subcommand name
@@ -63,6 +49,8 @@ func (*TuiCmd) Usage() string {
 		[-log-dir=/path/to/log]
 		[-debug]
 		[-debug-sql]
+		[-quiet]
+		[-no-progress]
 		[-pipe]
 		[-cvedb-type=sqlite3|mysql|postgres|redis|http]
 		[-cvedb-sqlite3-path=/path/to/cve.sqlite3]
@@ -76,6 +64,10 @@ func (*TuiCmd) Usage() string {
 		[-exploitdb-type=sqlite3|mysql|redis|http]
 		[-exploitdb-sqlite3-path=/path/to/exploitdb.sqlite3]
 		[-exploitdb-url=http://127.0.0.1:1326 or DB connection string]
+		[-msfdb-type=sqlite3|mysql|redis|http]
+		[-msfdb-sqlite3-path=/path/to/msfdb.sqlite3]
+		[-msfdb-url=http://127.0.0.1:1327 or DB connection string]
+		[-trivy-cachedb-dir=/path/to/dir]
 
 `
 }
@@ -85,6 +77,8 @@ func (p *TuiCmd) SetFlags(f *flag.FlagSet) {
 	//  f.StringVar(&p.lang, "lang", "en", "[en|ja]")
 	f.BoolVar(&c.Conf.DebugSQL, "debug-sql", false, "debug SQL")
 	f.BoolVar(&c.Conf.Debug, "debug", false, "debug mode")
+	f.BoolVar(&c.Conf.Quiet, "quiet", false, "Quiet mode. No output on stdout")
+	f.BoolVar(&c.Conf.NoProgress, "no-progress", false, "Suppress progress bar")
 
 	defaultLogDir := util.GetDefaultLogDir()
 	f.StringVar(&c.Conf.LogDir, "log-dir", defaultLogDir, "/path/to/log")
@@ -138,6 +132,14 @@ func (p *TuiCmd) SetFlags(f *flag.FlagSet) {
 	f.StringVar(&p.exploitConf.URL, "exploitdb-url", "",
 		"http://exploit.com:1326 or DB connection string")
 
+	f.StringVar(&p.metasploitConf.Type, "msfdb-type", "",
+		"DB type of msf (sqlite3, mysql, postgres, redis or http)")
+	f.StringVar(&p.metasploitConf.SQLite3Path, "msfdb-sqlite3-path", "", "/path/to/sqlite3")
+	f.StringVar(&p.metasploitConf.URL, "msfdb-url", "",
+		"http://metasploit.com:1327 or DB connection string")
+
+	f.StringVar(&c.Conf.TrivyCacheDBDir, "trivy-cachedb-dir",
+		utils.DefaultCacheDir(), "/path/to/dir")
 }
 
 // Execute execute
@@ -149,7 +151,7 @@ func (p *TuiCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) s
 	cvelog.SetLogger(c.Conf.LogDir, false, c.Conf.Debug, false)
 
 	if err := c.Load(p.configPath, ""); err != nil {
-		util.Log.Errorf("Error loading %s, %s", p.configPath, err)
+		util.Log.Errorf("Error loading %s, err: %+v", p.configPath, err)
 		return subcommands.ExitUsageError
 	}
 
@@ -157,6 +159,7 @@ func (p *TuiCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) s
 	c.Conf.OvalDict.Overwrite(p.ovalDict)
 	c.Conf.Gost.Overwrite(p.gostConf)
 	c.Conf.Exploit.Overwrite(p.exploitConf)
+	c.Conf.Metasploit.Overwrite(p.metasploitConf)
 
 	var dir string
 	var err error
@@ -166,7 +169,7 @@ func (p *TuiCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) s
 		dir, err = report.JSONDir(f.Args())
 	}
 	if err != nil {
-		util.Log.Errorf("Failed to read from JSON: %s", err)
+		util.Log.Errorf("Failed to read from JSON. err: %+v", err)
 		return subcommands.ExitFailure
 	}
 
@@ -189,7 +192,7 @@ func (p *TuiCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) s
 
 	if c.Conf.CveDict.URL != "" {
 		if err := report.CveClient.CheckHealth(); err != nil {
-			util.Log.Errorf("CVE HTTP server is not running. err: %s", err)
+			util.Log.Errorf("CVE HTTP server is not running. err: %+v", err)
 			util.Log.Errorf("Run go-cve-dictionary as server mode before reporting or run with `-cvedb-type=sqlite3 -cvedb-sqlite3-path` option instead of -cvedb-url")
 			return subcommands.ExitFailure
 		}
@@ -198,7 +201,7 @@ func (p *TuiCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) s
 	if c.Conf.OvalDict.URL != "" {
 		err := oval.Base{}.CheckHTTPHealth()
 		if err != nil {
-			util.Log.Errorf("OVAL HTTP server is not running. err: %s", err)
+			util.Log.Errorf("OVAL HTTP server is not running. err: %+v", err)
 			util.Log.Errorf("Run goval-dictionary as server mode before reporting or run with `-ovaldb-type=sqlite3 -ovaldb-sqlite3-path` option instead of -ovaldb-url")
 			return subcommands.ExitFailure
 		}
@@ -208,7 +211,7 @@ func (p *TuiCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) s
 		util.Log.Infof("gost: %s", c.Conf.Gost.URL)
 		err := gost.Base{}.CheckHTTPHealth()
 		if err != nil {
-			util.Log.Errorf("gost HTTP server is not running. err: %s", err)
+			util.Log.Errorf("gost HTTP server is not running. err: %+v", err)
 			util.Log.Errorf("Run gost as server mode before reporting or run with `-gostdb-type=sqlite3 -gostdb-sqlite3-path` option instead of -gostdb-url")
 			return subcommands.ExitFailure
 		}
@@ -217,25 +220,35 @@ func (p *TuiCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) s
 	if c.Conf.Exploit.URL != "" {
 		err := exploit.CheckHTTPHealth()
 		if err != nil {
-			util.Log.Errorf("exploit HTTP server is not running. err: %s", err)
+			util.Log.Errorf("exploit HTTP server is not running. err: %+v", err)
 			util.Log.Errorf("Run go-exploitdb as server mode before reporting")
 			return subcommands.ExitFailure
 		}
 	}
+
+	if c.Conf.Metasploit.URL != "" {
+		err := msf.CheckHTTPHealth()
+		if err != nil {
+			util.Log.Errorf("metasploit HTTP server is not running. err: %+v", err)
+			util.Log.Errorf("Run go-msfdb as server mode before reporting")
+			return subcommands.ExitFailure
+		}
+	}
 	dbclient, locked, err := report.NewDBClient(report.DBClientConf{
-		CveDictCnf:  c.Conf.CveDict,
-		OvalDictCnf: c.Conf.OvalDict,
-		GostCnf:     c.Conf.Gost,
-		ExploitCnf:  c.Conf.Exploit,
-		DebugSQL:    c.Conf.DebugSQL,
+		CveDictCnf:    c.Conf.CveDict,
+		OvalDictCnf:   c.Conf.OvalDict,
+		GostCnf:       c.Conf.Gost,
+		ExploitCnf:    c.Conf.Exploit,
+		MetasploitCnf: c.Conf.Metasploit,
+		DebugSQL:      c.Conf.DebugSQL,
 	})
 	if locked {
-		util.Log.Errorf("SQLite3 is locked. Close other DB connections and try again: %s", err)
+		util.Log.Errorf("SQLite3 is locked. Close other DB connections and try again: %+v", err)
 		return subcommands.ExitFailure
 	}
 
 	if err != nil {
-		util.Log.Errorf("Failed to init DB Clients: %s", err)
+		util.Log.Errorf("Failed to init DB Clients. err: %+v", err)
 		return subcommands.ExitFailure
 	}
 
@@ -245,5 +258,13 @@ func (p *TuiCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) s
 		util.Log.Error(err)
 		return subcommands.ExitFailure
 	}
+
+	for _, r := range res {
+		if len(r.Warnings) != 0 {
+			util.Log.Warnf("Warning: Some warnings occurred while scanning on %s: %s",
+				r.FormatServerName(), r.Warnings)
+		}
+	}
+
 	return report.RunTui(res)
 }

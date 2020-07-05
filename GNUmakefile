@@ -1,11 +1,9 @@
 .PHONY: \
-	dep \
-	depup \
 	build \
 	install \
 	all \
 	vendor \
-	lint \
+ 	lint \
 	vet \
 	fmt \
 	fmtcheck \
@@ -21,31 +19,27 @@ REVISION := $(shell git rev-parse --short HEAD)
 BUILDTIME := $(shell date "+%Y%m%d_%H%M%S")
 LDFLAGS := -X 'github.com/future-architect/vuls/config.Version=$(VERSION)' \
     -X 'github.com/future-architect/vuls/config.Revision=build-$(BUILDTIME)_$(REVISION)'
+GO := GO111MODULE=on go
+GO_OFF := GO111MODULE=off go
 
-all: dep build
 
-dep:
-	go get -u github.com/golang/dep/...
-	dep ensure -v
+all: build
 
-depup:
-	go get -u github.com/golang/dep/...
-	dep ensure -update -v
+build: main.go pretest fmt
+	$(GO) build -a -ldflags "$(LDFLAGS)" -o vuls $<
 
-build: main.go dep pretest
-	go build -ldflags "$(LDFLAGS)" -o vuls $<
+b: 	main.go pretest fmt
+	$(GO) build -ldflags "$(LDFLAGS)" -o vuls $<
 
-install: main.go dep pretest
-	go install -ldflags "$(LDFLAGS)"
-
+install: main.go pretest
+	$(GO) install -ldflags "$(LDFLAGS)"
 
 lint:
-	@ go get -v golang.org/x/lint/golint
+	$(GO_OFF) get -u golang.org/x/lint/golint
 	golint $(PKGS)
 
 vet:
-	#  @-go get -v golang.org/x/tools/cmd/vet
-	go vet ./... || exit;
+	echo $(PKGS) | xargs env $(GO) vet || exit;
 
 fmt:
 	gofmt -s -w $(SRCS)
@@ -59,7 +53,7 @@ fmtcheck:
 pretest: lint vet fmtcheck
 
 test: 
-	echo $(PKGS) | xargs go test -cover -v || exit;
+	$(GO) test -cover -v ./... || exit;
 
 unused:
 	$(foreach pkg,$(PKGS),unused $(pkg);)
@@ -72,3 +66,10 @@ cov:
 clean:
 	echo $(PKGS) | xargs go clean || exit;
 
+# trivy-to-vuls
+build-trivy-to-vuls: pretest fmt
+	$(GO) build -o trivy-to-vuls contrib/trivy/cmd/*.go
+
+# future-vuls
+build-future-vuls: pretest fmt
+	$(GO) build -o future-vuls contrib/future-vuls/cmd/*.go

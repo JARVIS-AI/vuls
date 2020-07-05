@@ -1,20 +1,3 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2016  Future Corporation , Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 package report
 
 import (
@@ -25,6 +8,7 @@ import (
 	"time"
 
 	storage "github.com/Azure/azure-sdk-for-go/storage"
+	"golang.org/x/xerrors"
 
 	c "github.com/future-architect/vuls/config"
 	"github.com/future-architect/vuls/models"
@@ -60,7 +44,7 @@ func (w AzureBlobWriter) Write(rs ...models.ScanResult) (err error) {
 			k := key + ".json"
 			var b []byte
 			if b, err = json.Marshal(r); err != nil {
-				return fmt.Errorf("Failed to Marshal to JSON: %s", err)
+				return xerrors.Errorf("Failed to Marshal to JSON: %w", err)
 			}
 			if err := createBlockBlob(cli, k, b); err != nil {
 				return err
@@ -87,7 +71,7 @@ func (w AzureBlobWriter) Write(rs ...models.ScanResult) (err error) {
 			k := key + ".xml"
 			var b []byte
 			if b, err = xml.Marshal(r); err != nil {
-				return fmt.Errorf("Failed to Marshal to XML: %s", err)
+				return xerrors.Errorf("Failed to Marshal to XML: %w", err)
 			}
 			allBytes := bytes.Join([][]byte{[]byte(xml.Header + vulsOpenTag), b, []byte(vulsCloseTag)}, []byte{})
 			if err := createBlockBlob(cli, k, allBytes); err != nil {
@@ -117,7 +101,7 @@ func CheckIfAzureContainerExists() error {
 		}
 	}
 	if !found {
-		return fmt.Errorf("Container not found. Container: %s", c.Conf.Azure.ContainerName)
+		return xerrors.Errorf("Container not found. Container: %s", c.Conf.Azure.ContainerName)
 	}
 	return nil
 }
@@ -142,7 +126,7 @@ func createBlockBlob(cli storage.BlobStorageClient, k string, b []byte) error {
 	ref := cli.GetContainerReference(c.Conf.Azure.ContainerName)
 	blob := ref.GetBlobReference(k)
 	if err := blob.CreateBlockBlobFromReader(bytes.NewReader(b), nil); err != nil {
-		return fmt.Errorf("Failed to upload data to %s/%s, %s",
+		return xerrors.Errorf("Failed to upload data to %s/%s, err: %w",
 			c.Conf.Azure.ContainerName, k, err)
 	}
 	return nil

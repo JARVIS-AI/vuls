@@ -1,20 +1,3 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2016  Future Architect, Inc. Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 package server
 
 import (
@@ -58,7 +41,10 @@ func (h VulsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	} else if mediatype == "text/plain" {
 		buf := new(bytes.Buffer)
-		io.Copy(buf, r.Body)
+		if _, err := io.Copy(buf, r.Body); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
 		if result, err = scan.ViaHTTP(r.Header, buf.String()); err != nil {
 			util.Log.Error(err)
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -70,10 +56,16 @@ func (h VulsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := report.FillCveInfo(h.DBclient, &result, []string{}); err != nil {
+	if err := report.FillCveInfo(h.DBclient, &result, []string{}, true); err != nil {
 		util.Log.Error(err)
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
+	}
+
+	// set ReportedAt to current time when it's set to the epoch, ensures that ReportedAt will be set
+	// properly for scans sent to vuls when running in server mode
+	if result.ReportedAt.IsZero() {
+		result.ReportedAt = time.Now()
 	}
 
 	// report
@@ -84,10 +76,11 @@ func (h VulsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		scannedAt := result.ScannedAt
 		if scannedAt.IsZero() {
 			scannedAt = time.Now().Truncate(1 * time.Hour)
+			result.ScannedAt = scannedAt
 		}
 		dir, err := scan.EnsureResultDir(scannedAt)
 		if err != nil {
-			util.Log.Errorf("Failed to ensure the result directory: %s", err)
+			util.Log.Errorf("Failed to ensure the result directory: %+v", err)
 			http.Error(w, err.Error(), http.StatusServiceUnavailable)
 			return
 		}
@@ -99,7 +92,7 @@ func (h VulsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	for _, w := range reports {
 		if err := w.Write(result); err != nil {
-			util.Log.Errorf("Failed to report: %s", err)
+			util.Log.Errorf("Failed to report. err: %+v", err)
 			return
 		}
 	}

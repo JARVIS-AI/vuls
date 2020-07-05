@@ -9,6 +9,7 @@ import (
 	"github.com/future-architect/vuls/config"
 	"github.com/future-architect/vuls/models"
 	"github.com/future-architect/vuls/util"
+	"golang.org/x/xerrors"
 )
 
 // inherit OsTypeInterface
@@ -120,12 +121,14 @@ func (o *suse) scanPackages() error {
 		return err
 	}
 
-	rebootRequired, err := o.rebootRequired()
+	o.Kernel.RebootRequired, err = o.rebootRequired()
 	if err != nil {
-		o.log.Errorf("Failed to detect the kernel reboot required: %s", err)
-		return err
+		err = xerrors.Errorf("Failed to detect the kernel reboot required: %w", err)
+		o.log.Warnf("err: %+v", err)
+		o.warns = append(o.warns, err)
+		// Only warning this error
 	}
-	o.Kernel.RebootRequired = rebootRequired
+
 	if o.getServerInfo().Mode.IsOffline() {
 		o.Packages = installed
 		return nil
@@ -133,12 +136,15 @@ func (o *suse) scanPackages() error {
 
 	updatable, err := o.scanUpdatablePackages()
 	if err != nil {
-		o.log.Errorf("Failed to scan updatable packages: %s", err)
-		return err
+		err = xerrors.Errorf("Failed to scan updatable packages: %w", err)
+		o.log.Warnf("err: %+v", err)
+		o.warns = append(o.warns, err)
+		// Only warning this error
+	} else {
+		installed.MergeNewVersion(updatable)
 	}
-	installed.MergeNewVersion(updatable)
-	o.Packages = installed
 
+	o.Packages = installed
 	return nil
 }
 
@@ -160,7 +166,7 @@ func (o *suse) scanUpdatablePackages() (models.Packages, error) {
 	}
 	r := o.exec(cmd, noSudo)
 	if !r.isSuccess() {
-		return nil, fmt.Errorf("Failed to scan updatable packages: %v", r)
+		return nil, xerrors.Errorf("Failed to scan updatable packages: %v", r)
 	}
 	return o.parseZypperLULines(r.Stdout)
 }
@@ -184,16 +190,16 @@ func (o *suse) parseZypperLULines(stdout string) (models.Packages, error) {
 }
 
 func (o *suse) parseZypperLUOneLine(line string) (*models.Package, error) {
-	fs := strings.Fields(line)
-	if len(fs) != 11 {
-		return nil, fmt.Errorf("zypper -q lu Unknown format: %s", line)
+	ss := strings.Split(line, "|")
+	if len(ss) != 6 {
+		return nil, xerrors.Errorf("zypper -q lu Unknown format: %s", line)
 	}
-	available := strings.Split(fs[8], "-")
+	available := strings.Split(strings.TrimSpace(ss[4]), "-")
 	return &models.Package{
-		Name:       fs[4],
+		Name:       strings.TrimSpace(ss[2]),
 		NewVersion: available[0],
 		NewRelease: available[1],
-		Arch:       fs[10],
+		Arch:       strings.TrimSpace(ss[5]),
 	}, nil
 }
 

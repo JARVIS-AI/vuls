@@ -1,19 +1,3 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2016  Future Corporation , Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
 package models
 
 import (
@@ -189,5 +173,127 @@ func TestFindByBinName(t *testing.T) {
 		if act != nil && !reflect.DeepEqual(*tt.expected, *act) {
 			t.Errorf("[%d] expected %#v, actual %#v", i, tt.in, tt.expected)
 		}
+	}
+}
+
+func TestPackage_FormatVersionFromTo(t *testing.T) {
+	type fields struct {
+		Name             string
+		Version          string
+		Release          string
+		NewVersion       string
+		NewRelease       string
+		Arch             string
+		Repository       string
+		Changelog        Changelog
+		AffectedProcs    []AffectedProcess
+		NeedRestartProcs []NeedRestartProcess
+	}
+	type args struct {
+		stat PackageFixStatus
+	}
+	tests := []struct {
+		name   string
+		fields fields
+		args   args
+		want   string
+	}{
+		{
+			name: "fixed",
+			fields: fields{
+				Name:       "packA",
+				Version:    "1.0.0",
+				Release:    "a",
+				NewVersion: "1.0.1",
+				NewRelease: "b",
+			},
+			args: args{
+				stat: PackageFixStatus{
+					NotFixedYet: false,
+					FixedIn:     "1.0.1-b",
+				},
+			},
+			want: "packA-1.0.0-a -> 1.0.1-b (FixedIn: 1.0.1-b)",
+		},
+		{
+			name: "nfy",
+			fields: fields{
+				Name:    "packA",
+				Version: "1.0.0",
+				Release: "a",
+			},
+			args: args{
+				stat: PackageFixStatus{
+					NotFixedYet: true,
+				},
+			},
+			want: "packA-1.0.0-a -> Not Fixed Yet",
+		},
+		{
+			name: "nfy",
+			fields: fields{
+				Name:    "packA",
+				Version: "1.0.0",
+				Release: "a",
+			},
+			args: args{
+				stat: PackageFixStatus{
+					NotFixedYet: false,
+					FixedIn:     "1.0.1-b",
+				},
+			},
+			want: "packA-1.0.0-a -> Unknown (FixedIn: 1.0.1-b)",
+		},
+		{
+			name: "nfy2",
+			fields: fields{
+				Name:    "packA",
+				Version: "1.0.0",
+				Release: "a",
+			},
+			args: args{
+				stat: PackageFixStatus{
+					NotFixedYet: true,
+					FixedIn:     "1.0.1-b",
+					FixState:    "open",
+				},
+			},
+			want: "packA-1.0.0-a -> open (FixedIn: 1.0.1-b)",
+		},
+		{
+			name: "nfy3",
+			fields: fields{
+				Name:    "packA",
+				Version: "1.0.0",
+				Release: "a",
+			},
+			args: args{
+				stat: PackageFixStatus{
+					NotFixedYet: true,
+					FixedIn:     "1.0.1-b",
+					FixState:    "open",
+				},
+			},
+			want: "packA-1.0.0-a -> open (FixedIn: 1.0.1-b)",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			p := Package{
+				Name:             tt.fields.Name,
+				Version:          tt.fields.Version,
+				Release:          tt.fields.Release,
+				NewVersion:       tt.fields.NewVersion,
+				NewRelease:       tt.fields.NewRelease,
+				Arch:             tt.fields.Arch,
+				Repository:       tt.fields.Repository,
+				Changelog:        tt.fields.Changelog,
+				AffectedProcs:    tt.fields.AffectedProcs,
+				NeedRestartProcs: tt.fields.NeedRestartProcs,
+			}
+			if got := p.FormatVersionFromTo(tt.args.stat); got != tt.want {
+				t.Errorf("Package.FormatVersionFromTo() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }

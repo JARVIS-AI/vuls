@@ -1,20 +1,3 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2016  Future Corporation , Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 package report
 
 import (
@@ -35,6 +18,7 @@ import (
 	"github.com/future-architect/vuls/util"
 	"github.com/gosuri/uitable"
 	"github.com/olekukonko/tablewriter"
+	"golang.org/x/xerrors"
 )
 
 const maxColWidth = 100
@@ -43,6 +27,8 @@ func formatScanSummary(rs ...models.ScanResult) string {
 	table := uitable.New()
 	table.MaxColWidth = maxColWidth
 	table.Wrap = true
+
+	warnMsgs := []string{}
 	for _, r := range rs {
 		var cols []interface{}
 		if len(r.Errors) == 0 {
@@ -56,18 +42,26 @@ func formatScanSummary(rs ...models.ScanResult) string {
 				r.FormatServerName(),
 				"Error",
 				"",
-				"Run with --debug to view the details",
+				"Use configtest subcommand or scan with --debug to view the details",
 			}
 		}
 		table.AddRow(cols...)
+
+		if len(r.Warnings) != 0 {
+			warnMsgs = append(warnMsgs, fmt.Sprintf("Warning for %s: %s",
+				r.FormatServerName(), r.Warnings))
+		}
 	}
-	return fmt.Sprintf("%s\n", table)
+	return fmt.Sprintf("%s\n\n%s", table, strings.Join(
+		warnMsgs, "\n\n"))
 }
 
 func formatOneLineSummary(rs ...models.ScanResult) string {
 	table := uitable.New()
 	table.MaxColWidth = maxColWidth
 	table.Wrap = true
+
+	warnMsgs := []string{}
 	for _, r := range rs {
 		var cols []interface{}
 		if len(r.Errors) == 0 {
@@ -77,26 +71,42 @@ func formatOneLineSummary(rs ...models.ScanResult) string {
 				r.ScannedCves.FormatFixedStatus(r.Packages),
 				r.FormatUpdatablePacksSummary(),
 				r.FormatExploitCveSummary(),
+				r.FormatMetasploitCveSummary(),
 				r.FormatAlertSummary(),
 			}
 		} else {
 			cols = []interface{}{
 				r.FormatServerName(),
-				"Error: Scan with --debug to view the details",
+				"Use configtest subcommand or scan with --debug to view the details",
 				"",
 			}
 		}
 		table.AddRow(cols...)
+
+		if len(r.Warnings) != 0 {
+			warnMsgs = append(warnMsgs, fmt.Sprintf("Warning for %s: %s",
+				r.FormatServerName(), r.Warnings))
+		}
 	}
-	return fmt.Sprintf("%s\n", table)
+	// We don't want warning message to the summary file
+	if config.Conf.Quiet {
+		return fmt.Sprintf("%s\n", table)
+	}
+	return fmt.Sprintf("%s\n\n%s", table, strings.Join(
+		warnMsgs, "\n\n"))
 }
 
 func formatList(r models.ScanResult) string {
 	header := r.FormatTextReportHeadedr()
 	if len(r.Errors) != 0 {
 		return fmt.Sprintf(
-			"%s\nError: Scan with --debug to view the details\n%s\n\n",
+			"%s\nError: Use configtest subcommand or scan with --debug to view the details\n%s\n\n",
 			header, r.Errors)
+	}
+	if len(r.Warnings) != 0 {
+		header += fmt.Sprintf(
+			"\nWarning: Some warnings occurred.\n%s\n\n",
+			r.Warnings)
 	}
 
 	if len(r.ScannedCves) == 0 {
@@ -117,21 +127,27 @@ No CVE-IDs are found in updatable packages.
 		// packname += strings.Join(vinfo.CpeURIs, ", ")
 
 		exploits := ""
-		if 0 < len(vinfo.Exploits) {
-			exploits = "   Y"
+		if 0 < len(vinfo.Exploits) || 0 < len(vinfo.Metasploits) {
+			exploits = "POC"
+		}
+
+		link := ""
+		if strings.HasPrefix(vinfo.CveID, "CVE-") {
+			link = fmt.Sprintf("https://nvd.nist.gov/vuln/detail/%s", vinfo.CveID)
+		} else if strings.HasPrefix(vinfo.CveID, "WPVDBID-") {
+			link = fmt.Sprintf("https://wpvulndb.com/vulnerabilities/%s", strings.TrimPrefix(vinfo.CveID, "WPVDBID-"))
 		}
 
 		data = append(data, []string{
 			vinfo.CveID,
-			vinfo.AlertDict.FormatSource(),
 			fmt.Sprintf("%4.1f", max),
+			fmt.Sprintf("%5s", vinfo.AttackVector()),
 			// fmt.Sprintf("%4.1f", v2max),
 			// fmt.Sprintf("%4.1f", v3max),
-			fmt.Sprintf("%8s", vinfo.AttackVector()),
-			fmt.Sprintf("%7s", vinfo.PatchStatus(r.Packages)),
-			// packname,
-			fmt.Sprintf("https://nvd.nist.gov/vuln/detail/%s", vinfo.CveID),
 			exploits,
+			vinfo.AlertDict.FormatSource(),
+			fmt.Sprintf("%7s", vinfo.PatchStatus(r.Packages)),
+			link,
 		})
 	}
 
@@ -139,15 +155,14 @@ No CVE-IDs are found in updatable packages.
 	table := tablewriter.NewWriter(&b)
 	table.SetHeader([]string{
 		"CVE-ID",
-		"CERT",
 		"CVSS",
+		"Attack",
 		// "v3",
 		// "v2",
-		"Attack",
+		"PoC",
+		"CERT",
 		"Fixed",
-		// "Pkg",
 		"NVD",
-		"Exploit",
 	})
 	table.SetBorder(true)
 	table.AppendBulk(data)
@@ -159,8 +174,14 @@ func formatFullPlainText(r models.ScanResult) (lines string) {
 	header := r.FormatTextReportHeadedr()
 	if len(r.Errors) != 0 {
 		return fmt.Sprintf(
-			"%s\nError: Scan with --debug to view the details\n%s\n\n",
+			"%s\nError: Use configtest subcommand or scan with --debug to view the details\n%s\n\n",
 			header, r.Errors)
+	}
+
+	if len(r.Warnings) != 0 {
+		header += fmt.Sprintf(
+			"\nWarning: Some warnings occurred.\n%s\n\n",
+			r.Warnings)
 	}
 
 	if len(r.ScannedCves) == 0 {
@@ -197,14 +218,28 @@ No CVE-IDs are found in updatable packages.
 		}
 
 		cweURLs, top10URLs := []string{}, []string{}
+		cweTop25URLs, sansTop25URLs := []string{}, []string{}
 		for _, v := range vuln.CveContents.UniqCweIDs(r.Family) {
-			name, url, top10Rank, top10URL := r.CweDict.Get(v.Value, r.Lang)
+			name, url, top10Rank, top10URL, cweTop25Rank, cweTop25URL, sansTop25Rank, sansTop25URL := r.CweDict.Get(v.Value, r.Lang)
 			if top10Rank != "" {
 				data = append(data, []string{"CWE",
 					fmt.Sprintf("[OWASP Top%s] %s: %s (%s)",
 						top10Rank, v.Value, name, v.Type)})
 				top10URLs = append(top10URLs, top10URL)
-			} else {
+			}
+			if cweTop25Rank != "" {
+				data = append(data, []string{"CWE",
+					fmt.Sprintf("[CWE Top%s] %s: %s (%s)",
+						cweTop25Rank, v.Value, name, v.Type)})
+				cweTop25URLs = append(cweTop25URLs, cweTop25URL)
+			}
+			if sansTop25Rank != "" {
+				data = append(data, []string{"CWE",
+					fmt.Sprintf("[CWE/SANS Top%s]  %s: %s (%s)",
+						sansTop25Rank, v.Value, name, v.Type)})
+				sansTop25URLs = append(sansTop25URLs, sansTop25URL)
+			}
+			if top10Rank == "" && cweTop25Rank == "" && sansTop25Rank == "" {
 				data = append(data, []string{"CWE", fmt.Sprintf("%s: %s (%s)",
 					v.Value, name, v.Type)})
 			}
@@ -217,19 +252,17 @@ No CVE-IDs are found in updatable packages.
 				var line string
 				if pack.Repository != "" {
 					line = fmt.Sprintf("%s (%s)",
-						pack.FormatVersionFromTo(affected.NotFixedYet, affected.FixState),
+						pack.FormatVersionFromTo(affected),
 						pack.Repository)
 				} else {
-					line = fmt.Sprintf("%s",
-						pack.FormatVersionFromTo(affected.NotFixedYet, affected.FixState),
-					)
+					line = pack.FormatVersionFromTo(affected)
 				}
 				data = append(data, []string{"Affected Pkg", line})
 
 				if len(pack.AffectedProcs) != 0 {
 					for _, p := range pack.AffectedProcs {
 						data = append(data, []string{"",
-							fmt.Sprintf("  - PID: %s %s", p.PID, p.Name)})
+							fmt.Sprintf("  - PID: %s %s, Port: %s", p.PID, p.Name, p.ListenPorts)})
 					}
 				}
 			}
@@ -239,19 +272,50 @@ No CVE-IDs are found in updatable packages.
 			data = append(data, []string{"CPE", name})
 		}
 
+		for _, alert := range vuln.GitHubSecurityAlerts {
+			data = append(data, []string{"GitHub", alert.PackageName})
+		}
+
+		for _, wp := range vuln.WpPackageFixStats {
+			if p, ok := r.WordPressPackages.Find(wp.Name); ok {
+				if p.Type == models.WPCore {
+					data = append(data, []string{"WordPress",
+						fmt.Sprintf("%s-%s, FixedIn: %s", wp.Name, p.Version, wp.FixedIn)})
+				} else {
+					data = append(data, []string{"WordPress",
+						fmt.Sprintf("%s-%s, Update: %s, FixedIn: %s, %s",
+							wp.Name, p.Version, p.Update, wp.FixedIn, p.Status)})
+				}
+			} else {
+				data = append(data, []string{"WordPress",
+					fmt.Sprintf("%s", wp.Name)})
+			}
+		}
+
+		for _, l := range vuln.LibraryFixedIns {
+			libs := r.LibraryScanners.Find(l.Path, l.Name)
+			for path, lib := range libs {
+				data = append(data, []string{l.Key,
+					fmt.Sprintf("%s-%s, FixedIn: %s (%s)",
+						lib.Name, lib.Version, l.FixedIn, path)})
+			}
+		}
+
 		for _, confidence := range vuln.Confidences {
 			data = append(data, []string{"Confidence", confidence.String()})
 		}
 
-		links := vuln.CveContents.SourceLinks(
-			config.Conf.Lang, r.Family, vuln.CveID)
-		data = append(data, []string{"Source", links[0].Value})
+		if strings.HasPrefix(vuln.CveID, "CVE-") {
+			links := vuln.CveContents.SourceLinks(
+				config.Conf.Lang, r.Family, vuln.CveID)
+			data = append(data, []string{"Source", links[0].Value})
 
-		if 0 < len(vuln.Cvss2Scores(r.Family)) {
-			data = append(data, []string{"CVSSv2 Calc", vuln.Cvss2CalcURL()})
-		}
-		if 0 < len(vuln.Cvss3Scores()) {
-			data = append(data, []string{"CVSSv3 Calc", vuln.Cvss3CalcURL()})
+			if 0 < len(vuln.Cvss2Scores(r.Family)) {
+				data = append(data, []string{"CVSSv2 Calc", vuln.Cvss2CalcURL()})
+			}
+			if 0 < len(vuln.Cvss3Scores()) {
+				data = append(data, []string{"CVSSv3 Calc", vuln.Cvss3CalcURL()})
+			}
 		}
 
 		vlinks := vuln.VendorLinks(r.Family)
@@ -266,6 +330,12 @@ No CVE-IDs are found in updatable packages.
 		}
 		for _, url := range top10URLs {
 			data = append(data, []string{"OWASP Top10", url})
+		}
+		if len(cweTop25URLs) != 0 {
+			data = append(data, []string{"CWE Top25", cweTop25URLs[0]})
+		}
+		if len(sansTop25URLs) != 0 {
+			data = append(data, []string{"SANS/CWE Top25", sansTop25URLs[0]})
 		}
 
 		for _, alert := range vuln.AlertDict.Ja {
@@ -288,7 +358,7 @@ No CVE-IDs are found in updatable packages.
 		table.SetHeaderAlignment(tablewriter.ALIGN_LEFT)
 		table.SetHeader([]string{
 			vuln.CveID,
-			"",
+			vuln.PatchStatus(r.Packages),
 		})
 		table.SetBorder(true)
 		table.AppendBulk(data)
@@ -349,7 +419,7 @@ func overwriteJSONFile(dir string, r models.ScanResult) error {
 	config.Conf.Diff = false
 	w := LocalFileWriter{CurrentDir: dir}
 	if err := w.Write(r); err != nil {
-		return fmt.Errorf("Failed to write summary report: %s", err)
+		return xerrors.Errorf("Failed to write summary report: %w", err)
 	}
 	config.Conf.FormatJSON = before
 	config.Conf.Diff = beforeDiff
@@ -371,7 +441,7 @@ func loadPrevious(currs models.ScanResults) (prevs models.ScanResults, err error
 			path := filepath.Join(dir, filename)
 			r, err := loadOneServerScanResult(path)
 			if err != nil {
-				util.Log.Errorf("%s", err)
+				util.Log.Errorf("%+v", err)
 				continue
 			}
 			if r.Family == result.Family && r.Release == result.Release {
@@ -446,6 +516,10 @@ func getDiffCves(previous, current models.ScanResult) models.VulnInfos {
 		}
 	}
 
+	if len(updated) == 0 {
+		util.Log.Infof("%s: There are %d vulnerabilities, but no difference between current result and previous one.", current.FormatServerName(), len(current.ScannedCves))
+	}
+
 	for cveID, vuln := range new {
 		updated[cveID] = vuln
 	}
@@ -517,7 +591,7 @@ var jsonDirPattern = regexp.MustCompile(
 func ListValidJSONDirs() (dirs []string, err error) {
 	var dirInfo []os.FileInfo
 	if dirInfo, err = ioutil.ReadDir(config.Conf.ResultsDir); err != nil {
-		err = fmt.Errorf("Failed to read %s: %s",
+		err = xerrors.Errorf("Failed to read %s: %w",
 			config.Conf.ResultsDir, err)
 		return
 	}
@@ -539,7 +613,7 @@ func ListValidJSONDirs() (dirs []string, err error) {
 // Otherwise, returns the path of the latest directory
 func JSONDir(args []string) (string, error) {
 	var err error
-	dirs := []string{}
+	var dirs []string
 
 	if 0 < len(args) {
 		if dirs, err = ListValidJSONDirs(); err != nil {
@@ -555,20 +629,20 @@ func JSONDir(args []string) (string, error) {
 			}
 		}
 
-		return "", fmt.Errorf("Invalid path: %s", path)
+		return "", xerrors.Errorf("Invalid path: %s", path)
 	}
 
 	// PIPE
 	if config.Conf.Pipe {
 		bytes, err := ioutil.ReadAll(os.Stdin)
 		if err != nil {
-			return "", fmt.Errorf("Failed to read stdin: %s", err)
+			return "", xerrors.Errorf("Failed to read stdin: %w", err)
 		}
 		fields := strings.Fields(string(bytes))
 		if 0 < len(fields) {
 			return filepath.Join(config.Conf.ResultsDir, fields[0]), nil
 		}
-		return "", fmt.Errorf("Stdin is invalid: %s", string(bytes))
+		return "", xerrors.Errorf("Stdin is invalid: %s", string(bytes))
 	}
 
 	// returns latest dir when no args or no PIPE
@@ -576,7 +650,7 @@ func JSONDir(args []string) (string, error) {
 		return "", err
 	}
 	if len(dirs) == 0 {
-		return "", fmt.Errorf("No results under %s",
+		return "", xerrors.Errorf("No results under %s",
 			config.Conf.ResultsDir)
 	}
 	return dirs[0], nil
@@ -586,7 +660,7 @@ func JSONDir(args []string) (string, error) {
 func LoadScanResults(jsonDir string) (results models.ScanResults, err error) {
 	var files []os.FileInfo
 	if files, err = ioutil.ReadDir(jsonDir); err != nil {
-		return nil, fmt.Errorf("Failed to read %s: %s", jsonDir, err)
+		return nil, xerrors.Errorf("Failed to read %s: %w", jsonDir, err)
 	}
 	for _, f := range files {
 		if filepath.Ext(f.Name()) != ".json" || strings.HasSuffix(f.Name(), "_diff.json") {
@@ -601,7 +675,7 @@ func LoadScanResults(jsonDir string) (results models.ScanResults, err error) {
 		results = append(results, *r)
 	}
 	if len(results) == 0 {
-		return nil, fmt.Errorf("There is no json file under %s", jsonDir)
+		return nil, xerrors.Errorf("There is no json file under %s", jsonDir)
 	}
 	return
 }
@@ -613,11 +687,11 @@ func loadOneServerScanResult(jsonFile string) (*models.ScanResult, error) {
 		err  error
 	)
 	if data, err = ioutil.ReadFile(jsonFile); err != nil {
-		return nil, fmt.Errorf("Failed to read %s: %s", jsonFile, err)
+		return nil, xerrors.Errorf("Failed to read %s: %w", jsonFile, err)
 	}
 	result := &models.ScanResult{}
 	if err := json.Unmarshal(data, result); err != nil {
-		return nil, fmt.Errorf("Failed to parse %s: %s", jsonFile, err)
+		return nil, xerrors.Errorf("Failed to parse %s: %w", jsonFile, err)
 	}
 	return result, nil
 }

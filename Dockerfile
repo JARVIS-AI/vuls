@@ -11,7 +11,7 @@ COPY . $GOPATH/src/$REPOSITORY
 RUN cd $GOPATH/src/$REPOSITORY && make install
 
 
-FROM alpine:3.7
+FROM alpine:3.11
 
 MAINTAINER hikachan sadayuki-matsuno
 
@@ -21,11 +21,12 @@ ENV WORKDIR /vuls
 RUN apk add --no-cache \
         openssh-client \
         ca-certificates \
+        git \
     && mkdir -p $WORKDIR $LOGDIR
 
 COPY --from=builder /go/bin/vuls /usr/local/bin/
 
-VOLUME [$WORKDIR, $LOGDIR]
+VOLUME ["$WORKDIR", "$LOGDIR"]
 WORKDIR $WORKDIR
 ENV PWD $WORKDIR
 

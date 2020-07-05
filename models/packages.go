@@ -1,26 +1,11 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2016  Future Corporation , Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 package models
 
 import (
 	"bytes"
 	"fmt"
 	"strings"
+
+	"golang.org/x/xerrors"
 )
 
 // Packages is Map of Package
@@ -83,7 +68,7 @@ func (ps Packages) FindByFQPN(nameVerRelArc string) (*Package, error) {
 			return &p, nil
 		}
 	}
-	return nil, fmt.Errorf("Failed to find the package: %s", nameVerRelArc)
+	return nil, xerrors.Errorf("Failed to find the package: %s", nameVerRelArc)
 }
 
 // Package has installed binary packages.
@@ -135,18 +120,23 @@ func (p Package) FormatNewVer() string {
 }
 
 // FormatVersionFromTo formats installed and new package version
-func (p Package) FormatVersionFromTo(notFixedYet bool, status string) string {
+func (p Package) FormatVersionFromTo(stat PackageFixStatus) string {
 	to := p.FormatNewVer()
-	if notFixedYet {
-		if status != "" {
-			to = status
+	if stat.NotFixedYet {
+		if stat.FixState != "" {
+			to = stat.FixState
 		} else {
 			to = "Not Fixed Yet"
 		}
 	} else if p.NewVersion == "" {
 		to = "Unknown"
 	}
-	return fmt.Sprintf("%s-%s -> %s", p.Name, p.FormatVer(), to)
+	var fixedIn string
+	if stat.FixedIn != "" {
+		fixedIn = fmt.Sprintf(" (FixedIn: %s)", stat.FixedIn)
+	}
+	return fmt.Sprintf("%s-%s -> %s%s",
+		p.Name, p.FormatVer(), to, fixedIn)
 }
 
 // FormatChangelog formats the changelog
@@ -183,8 +173,9 @@ type Changelog struct {
 
 // AffectedProcess keep a processes information affected by software update
 type AffectedProcess struct {
-	PID  string `json:"pid"`
-	Name string `json:"name"`
+	PID         string   `json:"pid,omitempty"`
+	Name        string   `json:"name,omitempty"`
+	ListenPorts []string `json:"listenPorts,omitempty"`
 }
 
 // NeedRestartProcess keep a processes information affected by software update
@@ -204,6 +195,7 @@ type NeedRestartProcess struct {
 type SrcPackage struct {
 	Name        string   `json:"name"`
 	Version     string   `json:"version"`
+	Arch        string   `json:"arch"`
 	BinaryNames []string `json:"binaryNames"`
 }
 

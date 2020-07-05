@@ -1,20 +1,3 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2016  Future Corporation , Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 package scan
 
 import (
@@ -30,6 +13,7 @@ import (
 	"github.com/future-architect/vuls/models"
 	"github.com/future-architect/vuls/util"
 	version "github.com/knqyf263/go-deb-version"
+	"golang.org/x/xerrors"
 )
 
 // inherit OsTypeInterface
@@ -62,7 +46,7 @@ func detectDebian(c config.ServerInfo) (itsMe bool, deb osTypeInterface, err err
 			return false, deb, nil
 		}
 		if r.ExitStatus == 255 {
-			return false, deb, fmt.Errorf("Unable to connect via SSH. Scan with -vvv option to print SSH debugging messages and check SSH settings. If you have never SSH to the host to be scanned, SSH to the host before scanning in order to add the HostKey. %s@%s port: %s\n%s", c.User, c.Host, c.Port, r)
+			return false, deb, xerrors.Errorf("Unable to connect via SSH. Scan with -vvv option to print SSH debugging messages and check SSH settings. If you have never SSH to the host to be scanned, SSH to the host before scanning in order to add the HostKey. %s@%s port: %s\n%s", c.User, c.Host, c.Port, r)
 		}
 		util.Log.Debugf("Not Debian like Linux. %s", r)
 		return false, deb, nil
@@ -148,6 +132,9 @@ func (o *debian) checkIfSudoNoPasswd() error {
 	cmds := []string{
 		"checkrestart",
 		"stat /proc/1/exe",
+		"ls -l /proc/1/exe",
+		"cat /proc/1/maps",
+		"lsof -i -P",
 	}
 
 	if !o.getServerInfo().Mode.IsOffline() {
@@ -160,7 +147,7 @@ func (o *debian) checkIfSudoNoPasswd() error {
 		r := o.exec(cmd, sudo)
 		if !r.isSuccess() {
 			o.log.Errorf("sudo error on %s", r)
-			return fmt.Errorf("Failed to sudo: %s", r)
+			return xerrors.Errorf("Failed to sudo: %s", r)
 		}
 	}
 
@@ -171,7 +158,7 @@ func (o *debian) checkIfSudoNoPasswd() error {
 		r := o.exec(cmd, sudo)
 		if !r.isSuccess() {
 			o.log.Errorf("sudo error on %s", r)
-			return fmt.Errorf("Failed to sudo: %s", r)
+			return xerrors.Errorf("Failed to sudo: %s", r)
 		}
 	}
 
@@ -230,7 +217,7 @@ func (o *debian) checkDeps() error {
 			}
 			dep.logFunc(msg)
 			if dep.required {
-				return fmt.Errorf(msg)
+				return xerrors.New(msg)
 			}
 			continue
 		}
@@ -242,7 +229,7 @@ func (o *debian) checkDeps() error {
 			}
 			dep.logFunc(msg)
 			if dep.required {
-				return fmt.Errorf(msg)
+				return xerrors.New(msg)
 			}
 		}
 
@@ -254,7 +241,8 @@ func (o *debian) checkDeps() error {
 func (o *debian) preCure() error {
 	o.log.Infof("Scanning in %s", o.getServerInfo().Mode)
 	if err := o.detectIPAddr(); err != nil {
-		o.log.Debugf("Failed to detect IP addresses: %s", err)
+		o.log.Warnf("Failed to detect IP addresses: %s", err)
+		o.warns = append(o.warns, err)
 	}
 	// Ignore this error as it just failed to detect the IP addresses
 	return nil
@@ -262,7 +250,21 @@ func (o *debian) preCure() error {
 
 func (o *debian) postScan() error {
 	if o.getServerInfo().Mode.IsDeep() || o.getServerInfo().Mode.IsFastRoot() {
-		return o.checkrestart()
+		if err := o.dpkgPs(); err != nil {
+			err = xerrors.Errorf("Failed to dpkg-ps: %w", err)
+			o.log.Warnf("err: %+v", err)
+			o.warns = append(o.warns, err)
+			// Only warning this error
+		}
+	}
+
+	if o.getServerInfo().Mode.IsDeep() || o.getServerInfo().Mode.IsFastRoot() {
+		if err := o.checkrestart(); err != nil {
+			err = xerrors.Errorf("Failed to scan need-restarting processes: %w", err)
+			o.log.Warnf("err: %+v", err)
+			o.warns = append(o.warns, err)
+			// Only warning this error
+		}
 	}
 	return nil
 }
@@ -281,8 +283,9 @@ func (o *debian) scanPackages() error {
 	}
 	rebootRequired, err := o.rebootRequired()
 	if err != nil {
-		o.log.Errorf("Failed to detect the kernel reboot required: %s", err)
-		return err
+		o.log.Warnf("Failed to detect the kernel reboot required: %s", err)
+		o.warns = append(o.warns, err)
+		// Only warning this error
 	}
 	o.Kernel = models.Kernel{
 		Version:        version,
@@ -323,7 +326,7 @@ func (o *debian) rebootRequired() (bool, error) {
 	case 1:
 		return false, nil
 	default:
-		return false, fmt.Errorf("Failed to check reboot reauired: %s", r)
+		return false, xerrors.Errorf("Failed to check reboot reauired: %s", r)
 	}
 }
 
@@ -333,7 +336,7 @@ func (o *debian) scanInstalledPackages() (models.Packages, models.Packages, mode
 	updatable := models.Packages{}
 	r := o.exec(dpkgQuery, noSudo)
 	if !r.isSuccess() {
-		return nil, nil, nil, fmt.Errorf("Failed to SSH: %s", r)
+		return nil, nil, nil, xerrors.Errorf("Failed to SSH: %s", r)
 	}
 
 	installed, srcPacks, err := o.parseInstalledPackages(r.Stdout)
@@ -364,7 +367,7 @@ func (o *debian) scanInstalledPackages() (models.Packages, models.Packages, mode
 	// Fill the candidate versions of upgradable packages
 	err = o.fillCandidateVersion(updatable)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("Failed to fill candidate versions. err: %s", err)
+		return nil, nil, nil, xerrors.Errorf("Failed to fill candidate versions. err: %s", err)
 	}
 	installed.MergeNewVersion(updatable)
 
@@ -383,7 +386,7 @@ func (o *debian) parseInstalledPackages(stdout string) (models.Packages, models.
 		if trimmed := strings.TrimSpace(line); len(trimmed) != 0 {
 			name, status, version, srcName, srcVersion, err := o.parseScannedPackagesLine(trimmed)
 			if err != nil || len(status) < 2 {
-				return nil, nil, fmt.Errorf(
+				return nil, nil, xerrors.Errorf(
 					"Debian: Failed to parse package line: %s", line)
 			}
 
@@ -448,14 +451,14 @@ func (o *debian) parseScannedPackagesLine(line string) (name, status, version, s
 		return
 	}
 
-	return "", "", "", "", "", fmt.Errorf("Unknown format: %s", line)
+	return "", "", "", "", "", xerrors.Errorf("Unknown format: %s", line)
 }
 
 func (o *debian) aptGetUpdate() error {
 	o.log.Infof("apt-get update...")
 	cmd := util.PrependProxyEnv("apt-get update")
 	if r := o.exec(cmd, sudo); !r.isSuccess() {
-		return fmt.Errorf("Failed to apt-get update: %s", r)
+		return xerrors.Errorf("Failed to apt-get update: %s", r)
 	}
 	return nil
 }
@@ -477,7 +480,7 @@ func (o *debian) scanUnsecurePackages(updatable models.Packages) (models.VulnInf
 	// Collect CVE information of upgradable packages
 	vulnInfos, err := o.scanChangelogs(updatable, meta)
 	if err != nil {
-		return nil, fmt.Errorf("Failed to scan unsecure packages. err: %s", err)
+		return nil, xerrors.Errorf("Failed to scan unsecure packages. err: %s", err)
 	}
 
 	return vulnInfos, nil
@@ -487,7 +490,7 @@ func (o *debian) ensureChangelogCache(current cache.Meta) (*cache.Meta, error) {
 	// Search from cache
 	cached, found, err := cache.DB.GetMeta(current.Name)
 	if err != nil {
-		return nil, fmt.Errorf(
+		return nil, xerrors.Errorf(
 			"Failed to get meta. Please remove cache.db and then try again. err: %s", err)
 	}
 
@@ -495,7 +498,7 @@ func (o *debian) ensureChangelogCache(current cache.Meta) (*cache.Meta, error) {
 		o.log.Debugf("Not found in meta: %s", current.Name)
 		err = cache.DB.EnsureBuckets(current)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to ensure buckets. err: %s", err)
+			return nil, xerrors.Errorf("Failed to ensure buckets. err: %s", err)
 		}
 		return &current, nil
 	}
@@ -505,7 +508,7 @@ func (o *debian) ensureChangelogCache(current cache.Meta) (*cache.Meta, error) {
 		o.log.Debugf("Need to refesh meta: %s", current.Name)
 		err = cache.DB.EnsureBuckets(current)
 		if err != nil {
-			return nil, fmt.Errorf("Failed to ensure buckets. err: %s", err)
+			return nil, xerrors.Errorf("Failed to ensure buckets. err: %s", err)
 		}
 		return &current, nil
 
@@ -526,17 +529,17 @@ func (o *debian) fillCandidateVersion(updatables models.Packages) (err error) {
 	cmd := fmt.Sprintf("LANGUAGE=en_US.UTF-8 apt-cache policy %s", strings.Join(names, " "))
 	r := o.exec(cmd, noSudo)
 	if !r.isSuccess() {
-		return fmt.Errorf("Failed to SSH: %s", r)
+		return xerrors.Errorf("Failed to SSH: %s", r)
 	}
 	packAptPolicy := o.splitAptCachePolicy(r.Stdout)
 	for k, v := range packAptPolicy {
 		ver, err := o.parseAptCachePolicy(v, k)
 		if err != nil {
-			return fmt.Errorf("Failed to parse %s", err)
+			return xerrors.Errorf("Failed to parse %w", err)
 		}
 		pack, ok := updatables[k]
 		if !ok {
-			return fmt.Errorf("Not found: %s", k)
+			return xerrors.Errorf("Not found: %s", k)
 		}
 		pack.NewVersion = ver.Candidate
 		pack.Repository = ver.Repo
@@ -551,7 +554,7 @@ func (o *debian) getUpdatablePackNames() (packNames []string, err error) {
 	if r.isSuccess(0, 1) {
 		return o.parseAptGetUpgrade(r.Stdout)
 	}
-	return packNames, fmt.Errorf(
+	return packNames, xerrors.Errorf(
 		"Failed to %s. status: %d, stdout: %s, stderr: %s",
 		cmd, r.ExitStatus, r.Stdout, r.Stderr)
 }
@@ -573,11 +576,11 @@ func (o *debian) parseAptGetUpgrade(stdout string) (updatableNames []string, err
 		if len(result) == 2 {
 			nUpdatable, err := strconv.Atoi(result[1])
 			if err != nil {
-				return nil, fmt.Errorf(
+				return nil, xerrors.Errorf(
 					"Failed to scan upgradable packages number. line: %s", line)
 			}
 			if nUpdatable != len(updatableNames) {
-				return nil, fmt.Errorf(
+				return nil, xerrors.Errorf(
 					"Failed to scan upgradable packages, expected: %s, detected: %d",
 					result[1], len(updatableNames))
 			}
@@ -593,7 +596,7 @@ func (o *debian) parseAptGetUpgrade(stdout string) (updatableNames []string, err
 	}
 	if !stopLineFound {
 		// There are upgrades, but not found the stop line.
-		return nil, fmt.Errorf("Failed to scan upgradable packages")
+		return nil, xerrors.New("Failed to scan upgradable packages")
 	}
 	return
 }
@@ -677,23 +680,23 @@ func (o *debian) scanChangelogs(updatablePacks models.Packages, meta *cache.Meta
 		case err := <-errChan:
 			errs = append(errs, err)
 		case <-timeout:
-			errs = append(errs, fmt.Errorf("Timeout scanPackageCveIDs"))
+			errs = append(errs, xerrors.New("Timeout scanPackageCveIDs"))
 		}
 	}
 	if 0 < len(errs) {
-		return nil, fmt.Errorf("%v", errs)
+		return nil, xerrors.Errorf("errs: %w", errs)
 	}
 
-	var cveIDs []DetectedCveID
+	cveIDs := []DetectedCveID{}
 	for k := range cvePackages {
 		cveIDs = append(cveIDs, k)
 	}
 	o.log.Debugf("%d Cves are found. cves: %v", len(cveIDs), cveIDs)
 	vinfos := models.VulnInfos{}
 	for cveID, names := range cvePackages {
-		affected := models.PackageStatuses{}
+		affected := models.PackageFixStatuses{}
 		for _, n := range names {
-			affected = append(affected, models.PackageStatus{Name: n})
+			affected = append(affected, models.PackageFixStatus{Name: n})
 		}
 
 		vinfos[cveID.CveID] = models.VulnInfo{
@@ -764,7 +767,7 @@ func (o *debian) fetchParseChangelog(pack models.Package) ([]DetectedCveID, *mod
 		err := cache.DB.PutChangelog(
 			o.getServerInfo().GetServerName(), pack.Name, pack.Changelog.Contents)
 		if err != nil {
-			return nil, nil, fmt.Errorf("Failed to put changelog into cache")
+			return nil, nil, xerrors.New("Failed to put changelog into cache")
 		}
 	}
 
@@ -838,7 +841,7 @@ var cveRe = regexp.MustCompile(`(CVE-\d{4}-\d{4,})`)
 func (o *debian) parseChangelog(changelog, name, ver string, confidence models.Confidence) ([]DetectedCveID, *models.Package, error) {
 	installedVer, err := version.NewVersion(ver)
 	if err != nil {
-		return nil, nil, fmt.Errorf("Failed to parse installed version: %s, %s", ver, err)
+		return nil, nil, xerrors.Errorf("Failed to parse installed version: %s, err: %w", ver, err)
 	}
 	buf, cveIDs := []string{}, []string{}
 	scanner := bufio.NewScanner(strings.NewReader(changelog))
@@ -876,7 +879,7 @@ func (o *debian) parseChangelog(changelog, name, ver string, confidence models.C
 			Contents: "",
 			Method:   models.FailedToFindVersionInChangelog,
 		}
-		return nil, &pack, fmt.Errorf(
+		return nil, &pack, xerrors.Errorf(
 			"Failed to scan CVE IDs. The version is not in changelog. name: %s, version: %s",
 			name, ver)
 	}
@@ -958,7 +961,7 @@ func (o *debian) parseAptCachePolicy(stdout, name string) (packCandidateVer, err
 		}
 	nextline:
 	}
-	return ver, fmt.Errorf("Unknown Format: %s", stdout)
+	return ver, xerrors.Errorf("Unknown Format: %s", stdout)
 }
 
 func (o *debian) checkrestart() error {
@@ -971,7 +974,7 @@ func (o *debian) checkrestart() error {
 	cmd := "LANGUAGE=en_US.UTF-8 checkrestart"
 	r := o.exec(cmd, sudo)
 	if !r.isSuccess() {
-		return fmt.Errorf(
+		return xerrors.Errorf(
 			"Failed to %s. status: %d, stdout: %s, stderr: %s",
 			cmd, r.ExitStatus, r.Stdout, r.Stderr)
 	}
@@ -1101,4 +1104,102 @@ func (o *debian) parseCheckRestart(stdout string) (models.Packages, []string) {
 		}
 	}
 	return packs, unknownServices
+}
+
+func (o *debian) dpkgPs() error {
+	stdout, err := o.ps()
+	if err != nil {
+		return xerrors.Errorf("Failed to ps: %w", err)
+	}
+	pidNames := o.parsePs(stdout)
+	pidLoadedFiles := map[string][]string{}
+	// for pid, name := range pidNames {
+	for pid := range pidNames {
+		stdout := ""
+		stdout, err = o.lsProcExe(pid)
+		if err != nil {
+			o.log.Debugf("Failed to exec /proc/%s/exe err: %s", pid, err)
+			continue
+		}
+		s, err := o.parseLsProcExe(stdout)
+		if err != nil {
+			o.log.Debugf("Failed to parse /proc/%s/exe: %s", pid, err)
+			continue
+		}
+		pidLoadedFiles[pid] = append(pidLoadedFiles[pid], s)
+
+		stdout, err = o.grepProcMap(pid)
+		if err != nil {
+			o.log.Debugf("Failed to exec /proc/%s/maps: %s", pid, err)
+			continue
+		}
+		ss := o.parseGrepProcMap(stdout)
+		pidLoadedFiles[pid] = append(pidLoadedFiles[pid], ss...)
+	}
+
+	pidListenPorts := map[string][]string{}
+	stdout, err = o.lsOfListen()
+	if err != nil {
+		return xerrors.Errorf("Failed to ls of: %w", err)
+	}
+	portPid := o.parseLsOf(stdout)
+	for port, pid := range portPid {
+		pidListenPorts[pid] = append(pidListenPorts[pid], port)
+	}
+
+	for pid, loadedFiles := range pidLoadedFiles {
+		o.log.Debugf("dpkg -S %#v", loadedFiles)
+		pkgNames, err := o.getPkgName(loadedFiles)
+		if err != nil {
+			o.log.Debugf("Failed to get package name by file path: %s, err: %s", pkgNames, err)
+			continue
+		}
+
+		procName := ""
+		if _, ok := pidNames[pid]; ok {
+			procName = pidNames[pid]
+		}
+		proc := models.AffectedProcess{
+			PID:         pid,
+			Name:        procName,
+			ListenPorts: pidListenPorts[pid],
+		}
+
+		for _, n := range pkgNames {
+			p, ok := o.Packages[n]
+			if !ok {
+				return xerrors.Errorf("pkg not found %s", n)
+			}
+			p.AffectedProcs = append(p.AffectedProcs, proc)
+			o.Packages[p.Name] = p
+		}
+	}
+	return nil
+}
+
+func (o *debian) getPkgName(paths []string) (pkgNames []string, err error) {
+	cmd := "dpkg -S " + strings.Join(paths, " ")
+	r := o.exec(util.PrependProxyEnv(cmd), noSudo)
+	if !r.isSuccess(0, 1) {
+		return nil, xerrors.Errorf("Failed to SSH: %s", r)
+	}
+	return o.parseGetPkgName(r.Stdout), nil
+}
+
+func (o *debian) parseGetPkgName(stdout string) (pkgNames []string) {
+	uniq := map[string]struct{}{}
+	scanner := bufio.NewScanner(strings.NewReader(stdout))
+	for scanner.Scan() {
+		line := scanner.Text()
+		ss := strings.Fields(line)
+		if len(ss) < 2 || ss[1] == "no" {
+			continue
+		}
+		s := strings.Split(ss[0], ":")[0]
+		uniq[s] = struct{}{}
+	}
+	for n := range uniq {
+		pkgNames = append(pkgNames, n)
+	}
+	return pkgNames
 }

@@ -1,18 +1,3 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2016  Future Corporation , Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 package scan
 
 import (
@@ -30,7 +15,8 @@ func TestScanUpdatablePackages(t *testing.T) {
 	stdout := `S | Repository                                  | Name                          | Current Version             | Available Version           | Arch
 --+---------------------------------------------+-------------------------------+-----------------------------+-----------------------------+-------
 v | SLES12-SP2-Updates                          | SUSEConnect                   | 0.3.0-19.8.1                | 0.3.1-19.11.2               | x86_64
-v | SLES12-SP2-Updates                          | SuSEfirewall2                 | 3.6.312-2.3.1               | 3.6.312-2.10.1              | noarch`
+v | SLES12-SP2-Updates                          | SuSEfirewall2                 | 3.6.312-2.3.1               | 3.6.312-2.10.1              | noarch
+v | Clone of SLES11-SP3-Updates for x86_64 | ConsoleKit | 0.2.10-64.65.1 | 0.2.10-64.69.1 | x86_64`
 
 	var tests = []struct {
 		in  string
@@ -50,6 +36,12 @@ v | SLES12-SP2-Updates                          | SuSEfirewall2                 
 					NewVersion: "3.6.312",
 					NewRelease: "2.10.1",
 					Arch:       "noarch",
+				},
+				models.Package{
+					Name:       "ConsoleKit",
+					NewVersion: "0.2.10",
+					NewRelease: "64.69.1",
+					Arch:       "x86_64",
 				},
 			),
 		},

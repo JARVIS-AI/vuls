@@ -1,20 +1,3 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2016  Future Corporation , Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 package report
 
 import (
@@ -26,14 +9,14 @@ import (
 	"text/template"
 	"time"
 
-	"github.com/future-architect/vuls/alert"
+	"golang.org/x/xerrors"
 
 	"github.com/future-architect/vuls/config"
 	"github.com/future-architect/vuls/models"
 	"github.com/future-architect/vuls/util"
 	"github.com/google/subcommands"
 	"github.com/gosuri/uitable"
-	"github.com/jroimartin/gocui"
+	"github.com/jesseduffield/gocui"
 )
 
 var scanResults models.ScanResults
@@ -53,16 +36,17 @@ func RunTui(results models.ScanResults) subcommands.ExitStatus {
 		return scanResults[i].ServerName < scanResults[j].ServerName
 	})
 
-	g, err := gocui.NewGui(gocui.OutputNormal)
+	g := gocui.NewGui()
+	err := g.Init()
 	if err != nil {
-		util.Log.Errorf("%s", err)
+		util.Log.Errorf("%+v", err)
 		return subcommands.ExitFailure
 	}
 	defer g.Close()
 
-	g.SetManagerFunc(layout)
+	g.SetLayout(layout)
 	if err := keybindings(g); err != nil {
-		util.Log.Errorf("%s", err)
+		util.Log.Errorf("%+v", err)
 		return subcommands.ExitFailure
 	}
 	g.SelBgColor = gocui.ColorGreen
@@ -71,7 +55,7 @@ func RunTui(results models.ScanResults) subcommands.ExitStatus {
 
 	if err := g.MainLoop(); err != nil {
 		g.Close()
-		util.Log.Errorf("%s", err)
+		util.Log.Errorf("%+v", err)
 		os.Exit(1)
 	}
 	return subcommands.ExitSuccess
@@ -117,7 +101,6 @@ func keybindings(g *gocui.Gui) (err error) {
 	errs = append(errs, g.SetKeybinding("summary", gocui.KeySpace, gocui.ModNone, cursorPageDown))
 	errs = append(errs, g.SetKeybinding("summary", gocui.KeyBackspace, gocui.ModNone, cursorPageUp))
 	errs = append(errs, g.SetKeybinding("summary", gocui.KeyBackspace2, gocui.ModNone, cursorPageUp))
-	//  errs = append(errs, g.SetKeybinding("summary", gocui.KeyCtrlM, gocui.ModNone, cursorMoveMiddle))
 	errs = append(errs, g.SetKeybinding("summary", gocui.KeyEnter, gocui.ModNone, nextView))
 	errs = append(errs, g.SetKeybinding("summary", gocui.KeyCtrlN, gocui.ModNone, nextSummary))
 	errs = append(errs, g.SetKeybinding("summary", gocui.KeyCtrlP, gocui.ModNone, previousSummary))
@@ -185,19 +168,19 @@ func nextView(g *gocui.Gui, v *gocui.View) error {
 	var err error
 
 	if v == nil {
-		_, err = g.SetCurrentView("side")
+		return g.SetCurrentView("side")
 	}
 	switch v.Name() {
 	case "side":
-		_, err = g.SetCurrentView("summary")
+		err = g.SetCurrentView("summary")
 	case "summary":
-		_, err = g.SetCurrentView("detail")
+		err = g.SetCurrentView("detail")
 	case "detail":
-		_, err = g.SetCurrentView("changelog")
+		err = g.SetCurrentView("changelog")
 	case "changelog":
-		_, err = g.SetCurrentView("side")
+		err = g.SetCurrentView("side")
 	default:
-		_, err = g.SetCurrentView("summary")
+		err = g.SetCurrentView("summary")
 	}
 	return err
 }
@@ -206,19 +189,19 @@ func previousView(g *gocui.Gui, v *gocui.View) error {
 	var err error
 
 	if v == nil {
-		_, err = g.SetCurrentView("side")
+		return g.SetCurrentView("side")
 	}
 	switch v.Name() {
 	case "side":
-		_, err = g.SetCurrentView("side")
+		err = g.SetCurrentView("side")
 	case "summary":
-		_, err = g.SetCurrentView("side")
+		err = g.SetCurrentView("side")
 	case "detail":
-		_, err = g.SetCurrentView("summary")
+		err = g.SetCurrentView("summary")
 	case "changelog":
-		_, err = g.SetCurrentView("detail")
+		err = g.SetCurrentView("detail")
 	default:
-		_, err = g.SetCurrentView("side")
+		err = g.SetCurrentView("side")
 	}
 	return err
 }
@@ -299,31 +282,15 @@ func cursorDown(g *gocui.Gui, v *gocui.View) error {
 				return err
 			}
 		}
-		onMovingCursorRedrawView(g, v)
+		err := onMovingCursorRedrawView(g, v)
+		if err != nil {
+			return err
+		}
 	}
 
 	cx, cy := v.Cursor()
 	ox, oy := v.Origin()
-	debug(g, fmt.Sprintf("%v, %v, %v, %v", cx, cy, ox, oy))
-	return nil
-}
-
-func cursorMoveTop(g *gocui.Gui, v *gocui.View) error {
-	if v != nil {
-		cx, _ := v.Cursor()
-		v.SetCursor(cx, 0)
-	}
-	onMovingCursorRedrawView(g, v)
-	return nil
-}
-
-func cursorMoveBottom(g *gocui.Gui, v *gocui.View) error {
-	if v != nil {
-		_, maxY := v.Size()
-		cx, _ := v.Cursor()
-		v.SetCursor(cx, maxY-1)
-	}
-	onMovingCursorRedrawView(g, v)
+	_ = debug(g, fmt.Sprintf("%v, %v, %v, %v", cx, cy, ox, oy))
 	return nil
 }
 
@@ -331,9 +298,13 @@ func cursorMoveMiddle(g *gocui.Gui, v *gocui.View) error {
 	if v != nil {
 		_, maxY := v.Size()
 		cx, _ := v.Cursor()
-		v.SetCursor(cx, maxY/2)
+		if err := v.SetCursor(cx, maxY/2); err != nil {
+			return err
+		}
 	}
-	onMovingCursorRedrawView(g, v)
+	if err := onMovingCursorRedrawView(g, v); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -348,23 +319,25 @@ func cursorPageDown(g *gocui.Gui, v *gocui.View) error {
 
 		if !ok {
 			if yLimit < maxY {
-				v.SetCursor(cx, yLimit)
+				_ = v.SetCursor(cx, yLimit)
 			} else {
-				v.SetCursor(cx, maxY-1)
-				v.SetOrigin(ox, yLimit-maxY+1)
+				_ = v.SetCursor(cx, maxY-1)
+				_ = v.SetOrigin(ox, yLimit-maxY+1)
 			}
 		} else if yLimit < oy+jump+maxY {
 			if yLimit < maxY {
-				v.SetCursor(cx, yLimit)
+				_ = v.SetCursor(cx, yLimit)
 			} else {
-				v.SetOrigin(ox, yLimit-maxY+1)
-				v.SetCursor(cx, maxY-1)
+				_ = v.SetOrigin(ox, yLimit-maxY+1)
+				_ = v.SetCursor(cx, maxY-1)
 			}
 		} else {
-			v.SetCursor(cx, cy)
-			v.SetOrigin(ox, oy+jump)
+			_ = v.SetCursor(cx, cy)
+			if err := v.SetOrigin(ox, oy+jump); err != nil {
+				return err
+			}
 		}
-		onMovingCursorRedrawView(g, v)
+		_ = onMovingCursorRedrawView(g, v)
 	}
 	return nil
 }
@@ -379,7 +352,7 @@ func cursorUp(g *gocui.Gui, v *gocui.View) error {
 			}
 		}
 	}
-	onMovingCursorRedrawView(g, v)
+	_ = onMovingCursorRedrawView(g, v)
 	return nil
 }
 
@@ -389,11 +362,13 @@ func cursorPageUp(g *gocui.Gui, v *gocui.View) error {
 		cx, _ := v.Cursor()
 		ox, oy := v.Origin()
 		if err := v.SetOrigin(ox, oy-jump); err != nil {
-			v.SetOrigin(ox, 0)
-			v.SetCursor(cx, 0)
+			if err := v.SetOrigin(ox, 0); err != nil {
+				return err
+			}
+			_ = v.SetCursor(cx, 0)
 
 		}
-		onMovingCursorRedrawView(g, v)
+		_ = onMovingCursorRedrawView(g, v)
 	}
 	return nil
 }
@@ -401,7 +376,7 @@ func cursorPageUp(g *gocui.Gui, v *gocui.View) error {
 func previousSummary(g *gocui.Gui, v *gocui.View) error {
 	if v != nil {
 		// cursor to summary
-		if _, err := g.SetCurrentView("summary"); err != nil {
+		if err := g.SetCurrentView("summary"); err != nil {
 			return err
 		}
 		// move next line
@@ -409,7 +384,7 @@ func previousSummary(g *gocui.Gui, v *gocui.View) error {
 			return err
 		}
 		// cursor to detail
-		if _, err := g.SetCurrentView("detail"); err != nil {
+		if err := g.SetCurrentView("detail"); err != nil {
 			return err
 		}
 	}
@@ -419,7 +394,7 @@ func previousSummary(g *gocui.Gui, v *gocui.View) error {
 func nextSummary(g *gocui.Gui, v *gocui.View) error {
 	if v != nil {
 		// cursor to summary
-		if _, err := g.SetCurrentView("summary"); err != nil {
+		if err := g.SetCurrentView("summary"); err != nil {
 			return err
 		}
 		// move next line
@@ -427,7 +402,7 @@ func nextSummary(g *gocui.Gui, v *gocui.View) error {
 			return err
 		}
 		// cursor to detail
-		if _, err := g.SetCurrentView("detail"); err != nil {
+		if err := g.SetCurrentView("detail"); err != nil {
 			return err
 		}
 	}
@@ -501,7 +476,7 @@ func getLine(g *gocui.Gui, v *gocui.View) error {
 			return err
 		}
 		fmt.Fprintln(v, l)
-		if _, err := g.SetCurrentView("msg"); err != nil {
+		if err := g.SetCurrentView("msg"); err != nil {
 			return err
 		}
 	}
@@ -524,7 +499,7 @@ func showMsg(g *gocui.Gui, v *gocui.View) error {
 			return err
 		}
 		fmt.Fprintln(v, l)
-		if _, err := g.SetCurrentView("msg"); err != nil {
+		if err := g.SetCurrentView("msg"); err != nil {
 			return err
 		}
 	}
@@ -535,7 +510,7 @@ func delMsg(g *gocui.Gui, v *gocui.View) error {
 	if err := g.DeleteView("msg"); err != nil {
 		return err
 	}
-	_, err := g.SetCurrentView("summary")
+	err := g.SetCurrentView("summary")
 	return err
 }
 
@@ -560,10 +535,12 @@ func debug(g *gocui.Gui, str string) error {
 	if config.Conf.Debug {
 		maxX, maxY := g.Size()
 		if _, err := g.View("debug"); err != gocui.ErrUnknownView {
-			g.DeleteView("debug")
+			if err := g.DeleteView("debug"); err != nil {
+				return err
+			}
 		}
 		if v, err := g.SetView("debug", maxX/2-7, maxY/2, maxX/2+7, maxY/2+2); err != nil {
-			fmt.Fprintf(v, str)
+			fmt.Fprint(v, str)
 		}
 	}
 	return nil
@@ -581,11 +558,11 @@ func setSideLayout(g *gocui.Gui) error {
 			fmt.Fprintln(v, result.ServerInfoTui())
 		}
 		if len(scanResults) == 0 {
-			return fmt.Errorf("No scan results")
+			return xerrors.New("No scan results")
 		}
 		currentScanResult = scanResults[0]
 		vinfos = scanResults[0].ScannedCves.ToSortedSlice()
-		if _, err := g.SetCurrentView("side"); err != nil {
+		if err := g.SetCurrentView("side"); err != nil {
 			return err
 		}
 	}
@@ -600,7 +577,7 @@ func setSummaryLayout(g *gocui.Gui) error {
 		}
 
 		lines := summaryLines(currentScanResult)
-		fmt.Fprintf(v, lines)
+		fmt.Fprint(v, lines)
 
 		v.Highlight = true
 		v.Editable = false
@@ -634,22 +611,27 @@ func summaryLines(r models.ScanResult) string {
 			cvssScore = fmt.Sprintf("| %4.1f", max)
 		}
 
-		packname := vinfo.AffectedPackages.FormatTuiSummary()
-		packname += strings.Join(vinfo.CpeURIs, ", ")
+		pkgNames := vinfo.AffectedPackages.Names()
+		pkgNames = append(pkgNames, vinfo.CpeURIs...)
+		pkgNames = append(pkgNames, vinfo.GitHubSecurityAlerts.Names()...)
+		pkgNames = append(pkgNames, vinfo.WpPackageFixStats.Names()...)
+		pkgNames = append(pkgNames, vinfo.LibraryFixedIns.Names()...)
 
-		alert := "  "
-		if vinfo.AlertDict.HasAlert() {
-			alert = "! "
+		exploits := ""
+		if 0 < len(vinfo.Exploits) || 0 < len(vinfo.Metasploits) {
+			exploits = "POC"
 		}
 
 		var cols []string
 		cols = []string{
 			fmt.Sprintf(indexFormat, i+1),
-			alert + vinfo.CveID,
+			vinfo.CveID,
 			cvssScore + " |",
-			fmt.Sprintf("%8s |", vinfo.AttackVector()),
+			fmt.Sprintf("%4s |", vinfo.AttackVector()),
+			fmt.Sprintf("%3s |", exploits),
+			fmt.Sprintf("%6s |", vinfo.AlertDict.FormatSource()),
 			fmt.Sprintf("%7s |", vinfo.PatchStatus(r.Packages)),
-			packname,
+			strings.Join(pkgNames, ", "),
 		}
 		icols := make([]interface{}, len(cols))
 		for j := range cols {
@@ -719,27 +701,55 @@ func setChangelogLayout(g *gocui.Gui) error {
 				var line string
 				if pack.Repository != "" {
 					line = fmt.Sprintf("* %s (%s)",
-						pack.FormatVersionFromTo(affected.NotFixedYet, affected.FixState),
+						pack.FormatVersionFromTo(affected),
 						pack.Repository)
 				} else {
-					line = fmt.Sprintf("* %s",
-						pack.FormatVersionFromTo(affected.NotFixedYet, affected.FixState),
-					)
+					line = fmt.Sprintf("* %s", pack.FormatVersionFromTo(affected))
 				}
 				lines = append(lines, line)
 
 				if len(pack.AffectedProcs) != 0 {
 					for _, p := range pack.AffectedProcs {
-						lines = append(lines, fmt.Sprintf("  * PID: %s %s", p.PID, p.Name))
+						lines = append(lines, fmt.Sprintf("  * PID: %s %s Port: %s",
+							p.PID, p.Name, p.ListenPorts))
 					}
-				} else {
-					// lines = append(lines, fmt.Sprintf("  * No affected process"))
 				}
 			}
 		}
 		sort.Strings(vinfo.CpeURIs)
 		for _, uri := range vinfo.CpeURIs {
 			lines = append(lines, "* "+uri)
+		}
+
+		for _, alert := range vinfo.GitHubSecurityAlerts {
+			lines = append(lines, "* "+alert.PackageName)
+		}
+
+		r := currentScanResult
+		// check wordpress fixedin
+		if r.WordPressPackages != nil {
+			for _, wp := range vinfo.WpPackageFixStats {
+				if p, ok := r.WordPressPackages.Find(wp.Name); ok {
+					if p.Type == models.WPCore {
+						lines = append(lines, fmt.Sprintf("* %s-%s, FixedIn: %s",
+							wp.Name, p.Version, wp.FixedIn))
+					} else {
+						lines = append(lines,
+							fmt.Sprintf("* %s-%s, Update: %s, FixedIn: %s, %s",
+								wp.Name, p.Version, p.Update, wp.FixedIn, p.Status))
+					}
+				} else {
+					lines = append(lines, fmt.Sprintf("* %s", wp.Name))
+				}
+			}
+		}
+
+		for _, l := range vinfo.LibraryFixedIns {
+			libs := r.LibraryScanners.Find(l.Path, l.Name)
+			for path, lib := range libs {
+				lines = append(lines, fmt.Sprintf("%s-%s, FixedIn: %s (%s)",
+					lib.Name, lib.Version, l.FixedIn, path))
+			}
 		}
 
 		for _, adv := range vinfo.DistroAdvisories {
@@ -757,6 +767,21 @@ func setChangelogLayout(g *gocui.Gui) error {
 			)
 			for _, exploit := range vinfo.Exploits {
 				lines = append(lines, fmt.Sprintf("* [%s](%s)", exploit.Description, exploit.URL))
+			}
+		}
+
+		if len(vinfo.Metasploits) != 0 {
+			lines = append(lines, "\n",
+				"Metasploit Modules",
+				"==================",
+			)
+			for _, module := range vinfo.Metasploits {
+				lines = append(lines, fmt.Sprintf("* %s: %s", module.Name, module.Description))
+				if 0 < len(module.URLs) {
+					for _, u := range module.URLs {
+						lines = append(lines, fmt.Sprintf(" - %s", u))
+					}
+				}
 			}
 		}
 
@@ -812,11 +837,12 @@ type dataForTmpl struct {
 	CveID            string
 	Cvsses           string
 	Exploits         []models.Exploit
+	Metasploits      []models.Metasploit
 	Summary          string
 	Mitigation       string
 	Confidences      models.Confidences
 	Cwes             []models.CweDictEntry
-	Alerts           []alert.Alert
+	Alerts           []models.Alert
 	Links            []string
 	References       []models.Reference
 	Packages         []string
@@ -841,22 +867,34 @@ func detailLines() (string, error) {
 	}
 
 	vinfo := vinfos[currentVinfo]
-	links := []string{vinfo.CveContents.SourceLinks(
-		config.Conf.Lang, r.Family, vinfo.CveID)[0].Value,
-		vinfo.Cvss2CalcURL(),
-		vinfo.Cvss3CalcURL()}
+	links := []string{}
+	if strings.HasPrefix(vinfo.CveID, "CVE-") {
+		links = append(links, vinfo.CveContents.SourceLinks(
+			config.Conf.Lang, r.Family, vinfo.CveID)[0].Value,
+			vinfo.Cvss2CalcURL(),
+			vinfo.Cvss3CalcURL())
+	}
 	for _, url := range vinfo.VendorLinks(r.Family) {
 		links = append(links, url)
 	}
 
-	refs := []models.Reference{}
+	refsMap := map[string]models.Reference{}
 	for _, rr := range vinfo.CveContents.References(r.Family) {
 		for _, ref := range rr.Value {
 			if ref.Source == "" {
 				ref.Source = "-"
 			}
-			refs = append(refs, ref)
+			refsMap[ref.Link] = ref
 		}
+	}
+	if cont, found := vinfo.CveContents[models.Trivy]; found {
+		for _, ref := range cont.References {
+			refsMap[ref.Link] = ref
+		}
+	}
+	refs := []models.Reference{}
+	for _, v := range refsMap {
+		refs = append(refs, v)
 	}
 
 	summary := vinfo.Summaries(r.Lang, r.Family)[0]

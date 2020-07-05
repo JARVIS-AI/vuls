@@ -1,25 +1,7 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2016  Future Corporation , Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 package oval
 
 import (
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"regexp"
 	"strings"
@@ -29,11 +11,13 @@ import (
 	"github.com/future-architect/vuls/config"
 	"github.com/future-architect/vuls/models"
 	"github.com/future-architect/vuls/util"
+	apkver "github.com/knqyf263/go-apk-version"
 	debver "github.com/knqyf263/go-deb-version"
 	rpmver "github.com/knqyf263/go-rpm-version"
 	"github.com/kotakanbe/goval-dictionary/db"
 	ovalmodels "github.com/kotakanbe/goval-dictionary/models"
 	"github.com/parnurzeal/gorequest"
+	"golang.org/x/xerrors"
 )
 
 type ovalResult struct {
@@ -44,32 +28,42 @@ type defPacks struct {
 	def ovalmodels.Definition
 
 	// BinaryPackageName : NotFixedYet
-	actuallyAffectedPackNames map[string]bool
+	binpkgFixstat map[string]fixStat
 }
 
-func (e defPacks) toPackStatuses() (ps models.PackageStatuses) {
-	for name, notFixedYet := range e.actuallyAffectedPackNames {
-		ps = append(ps, models.PackageStatus{
+type fixStat struct {
+	notFixedYet bool
+	fixedIn     string
+	isSrcPack   bool
+	srcPackName string
+}
+
+func (e defPacks) toPackStatuses() (ps models.PackageFixStatuses) {
+	for name, stat := range e.binpkgFixstat {
+		ps = append(ps, models.PackageFixStatus{
 			Name:        name,
-			NotFixedYet: notFixedYet,
+			NotFixedYet: stat.notFixedYet,
+			FixedIn:     stat.fixedIn,
 		})
 	}
 	return
 }
 
-func (e *ovalResult) upsert(def ovalmodels.Definition, packName string, notFixedYet bool) (upserted bool) {
+func (e *ovalResult) upsert(def ovalmodels.Definition, packName string, fstat fixStat) (upserted bool) {
 	// alpine's entry is empty since Alpine secdb is not OVAL format
 	if def.DefinitionID != "" {
 		for i, entry := range e.entries {
 			if entry.def.DefinitionID == def.DefinitionID {
-				e.entries[i].actuallyAffectedPackNames[packName] = notFixedYet
+				e.entries[i].binpkgFixstat[packName] = fstat
 				return true
 			}
 		}
 	}
 	e.entries = append(e.entries, defPacks{
-		def:                       def,
-		actuallyAffectedPackNames: map[string]bool{packName: notFixedYet},
+		def: def,
+		binpkgFixstat: map[string]fixStat{
+			packName: fstat,
+		},
 	})
 
 	return false
@@ -78,7 +72,8 @@ func (e *ovalResult) upsert(def ovalmodels.Definition, packName string, notFixed
 type request struct {
 	packName          string
 	versionRelease    string
-	NewVersionRelease string
+	newVersionRelease string
+	arch              string
 	binaryPackNames   []string
 	isSrcPack         bool
 }
@@ -105,8 +100,9 @@ func getDefsByPackNameViaHTTP(r *models.ScanResult) (
 			reqChan <- request{
 				packName:          pack.Name,
 				versionRelease:    pack.FormatVer(),
-				NewVersionRelease: pack.FormatVer(),
+				newVersionRelease: pack.FormatVer(),
 				isSrcPack:         false,
+				arch:              pack.Arch,
 			}
 		}
 		for _, pack := range r.SrcPackages {
@@ -115,6 +111,7 @@ func getDefsByPackNameViaHTTP(r *models.ScanResult) (
 				binaryPackNames: pack.BinaryNames,
 				versionRelease:  pack.Version,
 				isSrcPack:       true,
+				// arch:            pack.Arch,
 			}
 		}
 	}()
@@ -148,27 +145,37 @@ func getDefsByPackNameViaHTTP(r *models.ScanResult) (
 		select {
 		case res := <-resChan:
 			for _, def := range res.defs {
-				affected, notFixedYet := isOvalDefAffected(def, res.request, r.Family, r.RunningKernel)
+				affected, notFixedYet, fixedIn := isOvalDefAffected(def, res.request, r.Family, r.RunningKernel)
 				if !affected {
 					continue
 				}
 
 				if res.request.isSrcPack {
 					for _, n := range res.request.binaryPackNames {
-						relatedDefs.upsert(def, n, false)
+						fs := fixStat{
+							srcPackName: res.request.packName,
+							isSrcPack:   true,
+							notFixedYet: notFixedYet,
+							fixedIn:     fixedIn,
+						}
+						relatedDefs.upsert(def, n, fs)
 					}
 				} else {
-					relatedDefs.upsert(def, res.request.packName, notFixedYet)
+					fs := fixStat{
+						notFixedYet: notFixedYet,
+						fixedIn:     fixedIn,
+					}
+					relatedDefs.upsert(def, res.request.packName, fs)
 				}
 			}
 		case err := <-errChan:
 			errs = append(errs, err)
 		case <-timeout:
-			return relatedDefs, fmt.Errorf("Timeout Fetching OVAL")
+			return relatedDefs, xerrors.New("Timeout Fetching OVAL")
 		}
 	}
 	if len(errs) != 0 {
-		return relatedDefs, fmt.Errorf("Failed to fetch OVAL. err: %v", errs)
+		return relatedDefs, xerrors.Errorf("Failed to fetch OVAL. err: %w", errs)
 	}
 	return
 }
@@ -186,8 +193,7 @@ func httpGet(url string, req request, resChan chan<- response, errChan chan<- er
 			if count == retryMax {
 				return nil
 			}
-			return fmt.Errorf("HTTP GET error: %v, url: %s, resp: %v",
-				errs, url, resp)
+			return xerrors.Errorf("HTTP GET error, url: %s, resp: %v, err: %w", url, resp, errs)
 		}
 		return nil
 	}
@@ -196,18 +202,17 @@ func httpGet(url string, req request, resChan chan<- response, errChan chan<- er
 	}
 	err := backoff.RetryNotify(f, backoff.NewExponentialBackOff(), notify)
 	if err != nil {
-		errChan <- fmt.Errorf("HTTP Error %s", err)
+		errChan <- xerrors.Errorf("HTTP Error %w", err)
 		return
 	}
 	if count == retryMax {
-		errChan <- fmt.Errorf("HRetry count exceeded")
+		errChan <- xerrors.New("HRetry count exceeded")
 		return
 	}
 
 	defs := []ovalmodels.Definition{}
 	if err := json.Unmarshal([]byte(body), &defs); err != nil {
-		errChan <- fmt.Errorf("Failed to Unmarshall. body: %s, err: %s",
-			body, err)
+		errChan <- xerrors.Errorf("Failed to Unmarshall. body: %s, err: %w", body, err)
 		return
 	}
 	resChan <- response{
@@ -222,7 +227,8 @@ func getDefsByPackNameFromOvalDB(driver db.DB, r *models.ScanResult) (relatedDef
 		requests = append(requests, request{
 			packName:          pack.Name,
 			versionRelease:    pack.FormatVer(),
-			NewVersionRelease: pack.FormatNewVer(),
+			newVersionRelease: pack.FormatNewVer(),
+			arch:              pack.Arch,
 			isSrcPack:         false,
 		})
 	}
@@ -231,27 +237,38 @@ func getDefsByPackNameFromOvalDB(driver db.DB, r *models.ScanResult) (relatedDef
 			packName:        pack.Name,
 			binaryPackNames: pack.BinaryNames,
 			versionRelease:  pack.Version,
+			arch:            pack.Arch,
 			isSrcPack:       true,
 		})
 	}
 
 	for _, req := range requests {
-		definitions, err := driver.GetByPackName(r.Release, req.packName)
+		definitions, err := driver.GetByPackName(r.Family, r.Release, req.packName, req.arch)
 		if err != nil {
-			return relatedDefs, fmt.Errorf("Failed to get %s OVAL info by package: %#v, err: %s", r.Family, req, err)
+			return relatedDefs, xerrors.Errorf("Failed to get %s OVAL info by package: %#v, err: %w", r.Family, req, err)
 		}
 		for _, def := range definitions {
-			affected, notFixedYet := isOvalDefAffected(def, req, r.Family, r.RunningKernel)
+			affected, notFixedYet, fixedIn := isOvalDefAffected(def, req, r.Family, r.RunningKernel)
 			if !affected {
 				continue
 			}
 
 			if req.isSrcPack {
-				for _, n := range req.binaryPackNames {
-					relatedDefs.upsert(def, n, false)
+				for _, binName := range req.binaryPackNames {
+					fs := fixStat{
+						notFixedYet: false,
+						isSrcPack:   true,
+						fixedIn:     fixedIn,
+						srcPackName: req.packName,
+					}
+					relatedDefs.upsert(def, binName, fs)
 				}
 			} else {
-				relatedDefs.upsert(def, req.packName, notFixedYet)
+				fs := fixStat{
+					notFixedYet: notFixedYet,
+					fixedIn:     fixedIn,
+				}
+				relatedDefs.upsert(def, req.packName, fs)
 			}
 		}
 	}
@@ -269,7 +286,7 @@ func major(version string) string {
 	return ver[0:strings.Index(ver, ".")]
 }
 
-func isOvalDefAffected(def ovalmodels.Definition, req request, family string, running models.Kernel) (affected, notFixedYet bool) {
+func isOvalDefAffected(def ovalmodels.Definition, req request, family string, running models.Kernel) (affected, notFixedYet bool, fixedIn string) {
 	for _, ovalPack := range def.AffectedPacks {
 		if req.packName != ovalPack.Name {
 			continue
@@ -288,66 +305,100 @@ func isOvalDefAffected(def ovalmodels.Definition, req request, family string, ru
 		}
 
 		if ovalPack.NotFixedYet {
-			return true, true
+			return true, true, ovalPack.Version
 		}
 
+		// Compare between the installed version vs the version in OVAL
 		less, err := lessThan(family, req.versionRelease, ovalPack)
 		if err != nil {
 			util.Log.Debugf("Failed to parse versions: %s, Ver: %#v, OVAL: %#v, DefID: %s",
 				err, req.versionRelease, ovalPack, def.DefinitionID)
-			return false, false
+			return false, false, ovalPack.Version
 		}
-
 		if less {
 			if req.isSrcPack {
-				// Unable to judge whether fixed or not fixed of src package(Ubuntu, Debian)
-				return true, false
+				// Unable to judge whether fixed or not-fixed of src package(Ubuntu, Debian)
+				return true, false, ovalPack.Version
 			}
+
+			// If the version of installed is less than in OVAL
+			switch family {
+			case config.RedHat,
+				config.Amazon,
+				config.SUSEEnterpriseServer,
+				config.Debian,
+				config.Ubuntu:
+				// Use fixed state in OVAL for these distros.
+				return true, false, ovalPack.Version
+			}
+
+			// But CentOS can't judge whether fixed or unfixed.
+			// Because fixed state in RHEL's OVAL is different.
+			// So, it have to be judged version comparison.
 
 			// `offline` or `fast` scan mode can't get a updatable version.
 			// In these mode, the blow field was set empty.
 			// Vuls can not judge fixed or unfixed.
-			if req.NewVersionRelease == "" {
-				return true, false
+			if req.newVersionRelease == "" {
+				return true, false, ovalPack.Version
 			}
 
 			// compare version: newVer vs oval
-			less, err := lessThan(family, req.NewVersionRelease, ovalPack)
+			less, err := lessThan(family, req.newVersionRelease, ovalPack)
 			if err != nil {
 				util.Log.Debugf("Failed to parse versions: %s, NewVer: %#v, OVAL: %#v, DefID: %s",
-					err, req.NewVersionRelease, ovalPack, def.DefinitionID)
-				return false, false
+					err, req.newVersionRelease, ovalPack, def.DefinitionID)
+				return false, false, ovalPack.Version
 			}
-			return true, less
+			return true, less, ovalPack.Version
 		}
 	}
-	return false, false
+	return false, false, ""
 }
 
-func lessThan(family, versionRelease string, packB ovalmodels.Package) (bool, error) {
+var centosVerPattern = regexp.MustCompile(`\.[es]l(\d+)(?:_\d+)?(?:\.centos)?`)
+var esVerPattern = regexp.MustCompile(`\.el(\d+)(?:_\d+)?`)
+
+func lessThan(family, newVer string, packInOVAL ovalmodels.Package) (bool, error) {
 	switch family {
-	case config.Debian, config.Ubuntu:
-		vera, err := debver.NewVersion(versionRelease)
+	case config.Debian,
+		config.Ubuntu:
+		vera, err := debver.NewVersion(newVer)
 		if err != nil {
 			return false, err
 		}
-		verb, err := debver.NewVersion(packB.Version)
+		verb, err := debver.NewVersion(packInOVAL.Version)
 		if err != nil {
 			return false, err
 		}
 		return vera.LessThan(verb), nil
-	case config.Oracle, config.SUSEEnterpriseServer, config.Alpine:
-		vera := rpmver.NewVersion(versionRelease)
-		verb := rpmver.NewVersion(packB.Version)
+
+	case config.Alpine:
+		vera, err := apkver.NewVersion(newVer)
+		if err != nil {
+			return false, err
+		}
+		verb, err := apkver.NewVersion(packInOVAL.Version)
+		if err != nil {
+			return false, err
+		}
 		return vera.LessThan(verb), nil
-	case config.RedHat, config.CentOS: // TODO: Suport config.Scientific
-		rea := regexp.MustCompile(`\.[es]l(\d+)(?:_\d+)?(?:\.centos)?`)
-		reb := regexp.MustCompile(`\.el(\d+)(?:_\d+)?`)
-		vera := rpmver.NewVersion(rea.ReplaceAllString(versionRelease, ".el$1"))
-		verb := rpmver.NewVersion(reb.ReplaceAllString(packB.Version, ".el$1"))
+
+	case config.Oracle,
+		config.SUSEEnterpriseServer,
+		config.Amazon:
+		vera := rpmver.NewVersion(newVer)
+		verb := rpmver.NewVersion(packInOVAL.Version)
 		return vera.LessThan(verb), nil
+
+	case config.RedHat,
+		config.CentOS:
+		vera := rpmver.NewVersion(centosVerPattern.ReplaceAllString(newVer, ".el$1"))
+		verb := rpmver.NewVersion(esVerPattern.ReplaceAllString(packInOVAL.Version, ".el$1"))
+		return vera.LessThan(verb), nil
+
 	default:
 		util.Log.Errorf("Not implemented yet: %s", family)
 	}
-	return false, fmt.Errorf("Package version comparison not supported: %s", family)
+	return false, xerrors.Errorf("Package version comparison not supported: %s", family)
 }

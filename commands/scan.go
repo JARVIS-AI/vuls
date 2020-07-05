@@ -1,20 +1,3 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2016  Future Corporation , Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 package commands
 
 import (
@@ -58,6 +41,8 @@ func (*ScanCmd) Usage() string {
 		[-ssh-native-insecure]
 		[-ssh-config]
 		[-containers-only]
+		[-libs-only]
+		[-wordpress-only]
 		[-skip-broken]
 		[-http-proxy=http://192.168.0.1:8080]
 		[-ask-key-password]
@@ -66,6 +51,8 @@ func (*ScanCmd) Usage() string {
 		[-debug]
 		[-pipe]
 		[-vvv]
+		[-ips]
+
 
 		[SERVER]...
 `
@@ -93,10 +80,16 @@ func (p *ScanCmd) SetFlags(f *flag.FlagSet) {
 		"Use Native Go implementation of SSH. Default: Use the external command")
 
 	f.BoolVar(&c.Conf.SSHConfig, "ssh-config", false,
-		"Use SSH options specified in ssh_config preferentially")
+		"[Deprecated] Use SSH options specified in ssh_config preferentially")
 
 	f.BoolVar(&c.Conf.ContainersOnly, "containers-only", false,
-		"Scan containers only. Default: Scan both of hosts and containers")
+		"Scan running containers only. Default: Scan both of hosts and running containers")
+
+	f.BoolVar(&c.Conf.LibsOnly, "libs-only", false,
+		"Scan libraries (lock files) specified in config.toml only.")
+
+	f.BoolVar(&c.Conf.WordPressOnly, "wordpress-only", false,
+		"Scan WordPress only.")
 
 	f.BoolVar(&c.Conf.SkipBroken, "skip-broken", false,
 		"[For CentOS] yum update changelog with --skip-broken option")
@@ -109,6 +102,8 @@ func (p *ScanCmd) SetFlags(f *flag.FlagSet) {
 	)
 
 	f.BoolVar(&c.Conf.Pipe, "pipe", false, "Use stdin via PIPE")
+
+	f.BoolVar(&c.Conf.DetectIPS, "ips", false, "retrieve IPS information")
 	f.BoolVar(&c.Conf.Vvv, "vvv", false, "ssh -vvv")
 
 	f.IntVar(&p.timeoutSec, "timeout", 5*60,
@@ -126,7 +121,7 @@ func (p *ScanCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) 
 	util.Log = util.NewCustomLogger(c.ServerInfo{})
 
 	if err := mkdirDotVuls(); err != nil {
-		util.Log.Errorf("Failed to create .vuls: %s", err)
+		util.Log.Errorf("Failed to create .vuls. err: %+v", err)
 		return subcommands.ExitUsageError
 	}
 
@@ -142,9 +137,22 @@ func (p *ScanCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) 
 
 	err = c.Load(p.configPath, keyPass)
 	if err != nil {
-		util.Log.Errorf("Error loading %s, %s", p.configPath, err)
-		util.Log.Errorf("If you update Vuls and get this error, there may be incompatible changes in config.toml")
-		util.Log.Errorf("Please check README: https://github.com/future-architect/vuls#configuration")
+		msg := []string{
+			fmt.Sprintf("Error loading %s", p.configPath),
+			"If you update Vuls and get this error, there may be incompatible changes in config.toml",
+			"Please check config.toml template : https://vuls.io/docs/en/usage-settings.html",
+		}
+		util.Log.Errorf("%s\n%+v", strings.Join(msg, "\n"), err)
+		return subcommands.ExitUsageError
+	}
+
+	if c.Conf.SSHConfig {
+		msg := []string{
+			"-ssh-config is deprecated",
+			"If you update Vuls and get this error, there may be incompatible changes in config.toml",
+			"Please check config.toml template : https://vuls.io/docs/en/usage-settings.html",
+		}
+		util.Log.Errorf("%s", strings.Join(msg, "\n"))
 		return subcommands.ExitUsageError
 	}
 
@@ -157,7 +165,7 @@ func (p *ScanCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) 
 	} else if c.Conf.Pipe {
 		bytes, err := ioutil.ReadAll(os.Stdin)
 		if err != nil {
-			util.Log.Errorf("Failed to read stdin: %s", err)
+			util.Log.Errorf("Failed to read stdin. err: %+v", err)
 			return subcommands.ExitFailure
 		}
 		fields := strings.Fields(string(bytes))
@@ -193,22 +201,24 @@ func (p *ScanCmd) Execute(_ context.Context, f *flag.FlagSet, _ ...interface{}) 
 
 	util.Log.Info("Detecting Server/Container OS... ")
 	if err := scan.InitServers(p.timeoutSec); err != nil {
-		util.Log.Errorf("Failed to init servers: %s", err)
+		util.Log.Errorf("Failed to init servers: %+v", err)
 		return subcommands.ExitFailure
 	}
 
 	util.Log.Info("Checking Scan Modes... ")
 	if err := scan.CheckScanModes(); err != nil {
-		util.Log.Errorf("Fix config.toml: %s", err)
+		util.Log.Errorf("Fix config.toml. err: %+v", err)
 		return subcommands.ExitFailure
 	}
 
 	util.Log.Info("Detecting Platforms... ")
 	scan.DetectPlatforms(p.timeoutSec)
+	util.Log.Info("Detecting IPS identifiers... ")
+	scan.DetectIPSs(p.timeoutSec)
 
 	util.Log.Info("Scanning vulnerabilities... ")
 	if err := scan.Scan(p.scanTimeoutSec); err != nil {
-		util.Log.Errorf("Failed to scan. err: %s", err)
+		util.Log.Errorf("Failed to scan. err: %+v", err)
 		return subcommands.ExitFailure
 	}
 	fmt.Printf("\n\n\n")

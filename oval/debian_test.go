@@ -1,19 +1,3 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2016  Future Corporation , Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
 package oval
 
 import (
@@ -36,7 +20,7 @@ func TestPackNamesOfUpdateDebian(t *testing.T) {
 			in: models.ScanResult{
 				ScannedCves: models.VulnInfos{
 					"CVE-2000-1000": models.VulnInfo{
-						AffectedPackages: models.PackageStatuses{
+						AffectedPackages: models.PackageFixStatuses{
 							{Name: "packA"},
 							{Name: "packC"},
 						},
@@ -49,16 +33,19 @@ func TestPackNamesOfUpdateDebian(t *testing.T) {
 						CveID: "CVE-2000-1000",
 					},
 				},
-				actuallyAffectedPackNames: map[string]bool{
-					"packB": true,
+				binpkgFixstat: map[string]fixStat{
+					"packB": {
+						notFixedYet: true,
+						fixedIn:     "1.0.0",
+					},
 				},
 			},
 			out: models.ScanResult{
 				ScannedCves: models.VulnInfos{
 					"CVE-2000-1000": models.VulnInfo{
-						AffectedPackages: models.PackageStatuses{
+						AffectedPackages: models.PackageFixStatuses{
 							{Name: "packA"},
-							{Name: "packB", NotFixedYet: true},
+							{Name: "packB", NotFixedYet: true, FixedIn: "1.0.0"},
 							{Name: "packC"},
 						},
 					},
@@ -73,7 +60,7 @@ func TestPackNamesOfUpdateDebian(t *testing.T) {
 		e := tt.out.ScannedCves["CVE-2000-1000"].AffectedPackages
 		a := tt.in.ScannedCves["CVE-2000-1000"].AffectedPackages
 		if !reflect.DeepEqual(a, e) {
-			t.Errorf("[%d] expected: %v\n  actual: %v\n", i, e, a)
+			t.Errorf("[%d] expected: %#v\n  actual: %#v\n", i, e, a)
 		}
 	}
 }

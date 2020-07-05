@@ -1,20 +1,3 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2016  Future Corporation , Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 package report
 
 import (
@@ -25,11 +8,12 @@ import (
 
 	"github.com/cenkalti/backoff"
 	"github.com/parnurzeal/gorequest"
+	"golang.org/x/xerrors"
 
 	"github.com/future-architect/vuls/config"
 	"github.com/future-architect/vuls/util"
 	cvedb "github.com/kotakanbe/go-cve-dictionary/db"
-	cve "github.com/kotakanbe/go-cve-dictionary/models"
+	cvemodels "github.com/kotakanbe/go-cve-dictionary/models"
 )
 
 // CveClient is api client of CVE disctionary service.
@@ -57,7 +41,7 @@ func (api cvedictClient) CheckHealth() error {
 	resp, _, errs = gorequest.New().SetDebug(config.Conf.Debug).Get(url).End()
 	//  resp, _, errs = gorequest.New().Proxy(api.httpProxy).Get(url).End()
 	if 0 < len(errs) || resp == nil || resp.StatusCode != 200 {
-		return fmt.Errorf("Failed to request to CVE server. url: %s, errs: %v",
+		return xerrors.Errorf("Failed to request to CVE server. url: %s, errs: %w",
 			url, errs)
 	}
 	return nil
@@ -65,18 +49,21 @@ func (api cvedictClient) CheckHealth() error {
 
 type response struct {
 	Key       string
-	CveDetail cve.CveDetail
+	CveDetail cvemodels.CveDetail
 }
 
-func (api cvedictClient) FetchCveDetails(driver cvedb.DB, cveIDs []string) (cveDetails []cve.CveDetail, err error) {
+func (api cvedictClient) FetchCveDetails(driver cvedb.DB, cveIDs []string) (cveDetails []cvemodels.CveDetail, err error) {
 	if !config.Conf.CveDict.IsFetchViaHTTP() {
+		if driver == nil {
+			return
+		}
 		for _, cveID := range cveIDs {
 			cveDetail, err := driver.Get(cveID)
 			if err != nil {
-				return nil, fmt.Errorf("Failed to fetch CVE. err: %s", err)
+				return nil, xerrors.Errorf("Failed to fetch CVE. err: %w", err)
 			}
 			if len(cveDetail.CveID) == 0 {
-				cveDetails = append(cveDetails, cve.CveDetail{
+				cveDetails = append(cveDetails, cvemodels.CveDetail{
 					CveID: cveID,
 				})
 			} else {
@@ -123,7 +110,7 @@ func (api cvedictClient) FetchCveDetails(driver cvedb.DB, cveIDs []string) (cveD
 		select {
 		case res := <-resChan:
 			if len(res.CveDetail.CveID) == 0 {
-				cveDetails = append(cveDetails, cve.CveDetail{
+				cveDetails = append(cveDetails, cvemodels.CveDetail{
 					CveID: res.Key,
 				})
 			} else {
@@ -132,12 +119,12 @@ func (api cvedictClient) FetchCveDetails(driver cvedb.DB, cveIDs []string) (cveD
 		case err := <-errChan:
 			errs = append(errs, err)
 		case <-timeout:
-			return nil, fmt.Errorf("Timeout Fetching CVE")
+			return nil, xerrors.New("Timeout Fetching CVE")
 		}
 	}
 	if len(errs) != 0 {
 		return nil,
-			fmt.Errorf("Failed to fetch CVE. err: %v", errs)
+			xerrors.Errorf("Failed to fetch CVE. err: %w", errs)
 	}
 	return
 }
@@ -150,8 +137,8 @@ func (api cvedictClient) httpGet(key, url string, resChan chan<- response, errCh
 		//  resp, body, errs = gorequest.New().SetDebug(config.Conf.Debug).Get(url).End()
 		resp, body, errs = gorequest.New().Get(url).End()
 		if 0 < len(errs) || resp == nil || resp.StatusCode != 200 {
-			return fmt.Errorf("HTTP GET error: %v, url: %s, resp: %v",
-				errs, url, resp)
+			return xerrors.Errorf("HTTP GET Error, url: %s, resp: %v, err: %w",
+				url, resp, errs)
 		}
 		return nil
 	}
@@ -161,13 +148,12 @@ func (api cvedictClient) httpGet(key, url string, resChan chan<- response, errCh
 	}
 	err := backoff.RetryNotify(f, backoff.NewExponentialBackOff(), notify)
 	if err != nil {
-		errChan <- fmt.Errorf("HTTP Error %s", err)
+		errChan <- xerrors.Errorf("HTTP Error: %w", err)
 		return
 	}
-	cveDetail := cve.CveDetail{}
+	cveDetail := cvemodels.CveDetail{}
 	if err := json.Unmarshal([]byte(body), &cveDetail); err != nil {
-		errChan <- fmt.Errorf("Failed to Unmarshall. body: %s, err: %s",
-			body, err)
+		errChan <- xerrors.Errorf("Failed to Unmarshall. body: %s, err: %w", body, err)
 		return
 	}
 	resChan <- response{
@@ -176,7 +162,7 @@ func (api cvedictClient) httpGet(key, url string, resChan chan<- response, errCh
 	}
 }
 
-func (api cvedictClient) FetchCveDetailsByCpeName(driver cvedb.DB, cpeName string) ([]cve.CveDetail, error) {
+func (api cvedictClient) FetchCveDetailsByCpeName(driver cvedb.DB, cpeName string) ([]cvemodels.CveDetail, error) {
 	if config.Conf.CveDict.IsFetchViaHTTP() {
 		api.baseURL = config.Conf.CveDict.URL
 		url, err := util.URLPathJoin(api.baseURL, "cpes")
@@ -191,7 +177,7 @@ func (api cvedictClient) FetchCveDetailsByCpeName(driver cvedb.DB, cpeName strin
 	return driver.GetByCpeURI(cpeName)
 }
 
-func (api cvedictClient) httpPost(key, url string, query map[string]string) ([]cve.CveDetail, error) {
+func (api cvedictClient) httpPost(key, url string, query map[string]string) ([]cvemodels.CveDetail, error) {
 	var body string
 	var errs []error
 	var resp *http.Response
@@ -203,7 +189,7 @@ func (api cvedictClient) httpPost(key, url string, query map[string]string) ([]c
 		}
 		resp, body, errs = req.End()
 		if 0 < len(errs) || resp == nil || resp.StatusCode != 200 {
-			return fmt.Errorf("HTTP POST error: %v, url: %s, resp: %v", errs, url, resp)
+			return xerrors.Errorf("HTTP POST error. url: %s, resp: %v, err: %w", url, resp, errs)
 		}
 		return nil
 	}
@@ -212,13 +198,13 @@ func (api cvedictClient) httpPost(key, url string, query map[string]string) ([]c
 	}
 	err := backoff.RetryNotify(f, backoff.NewExponentialBackOff(), notify)
 	if err != nil {
-		return nil, fmt.Errorf("HTTP Error %s", err)
+		return nil, xerrors.Errorf("HTTP Error: %w", err)
 	}
 
-	cveDetails := []cve.CveDetail{}
+	cveDetails := []cvemodels.CveDetail{}
 	if err := json.Unmarshal([]byte(body), &cveDetails); err != nil {
 		return nil,
-			fmt.Errorf("Failed to Unmarshall. body: %s, err: %s", body, err)
+			xerrors.Errorf("Failed to Unmarshall. body: %s, err: %w", body, err)
 	}
 	return cveDetails, nil
 }

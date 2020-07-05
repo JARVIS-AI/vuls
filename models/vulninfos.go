@@ -1,20 +1,3 @@
-/* Vuls - Vulnerability Scanner
-Copyright (C) 2016  Future Corporation , Japan.
-
-This program is free software: you can redistribute it and/or modify
-it under the terms of the GNU General Public License as published by
-the Free Software Foundation, either version 3 of the License, or
-(at your option) any later version.
-
-This program is distributed in the hope that it will be useful,
-but WITHOUT ANY WARRANTY; without even the implied warranty of
-MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-GNU General Public License for more details.
-
-You should have received a copy of the GNU General Public License
-along with this program.  If not, see <http://www.gnu.org/licenses/>.
-*/
-
 package models
 
 import (
@@ -23,8 +6,6 @@ import (
 	"sort"
 	"strings"
 	"time"
-
-	"github.com/future-architect/vuls/alert"
 
 	"github.com/future-architect/vuls/config"
 	exploitmodels "github.com/mozqnet/go-exploitdb/models"
@@ -115,27 +96,26 @@ func (v VulnInfos) FormatFixedStatus(packs Packages) string {
 			continue
 		}
 		total++
-		if vInfo.PatchStatus(packs) == "Fixed" {
+		if vInfo.PatchStatus(packs) == "fixed" {
 			fixed++
 		}
 	}
 	return fmt.Sprintf("%d/%d Fixed", fixed, total)
 }
 
-// PackageStatuses is a list of PackageStatus
-type PackageStatuses []PackageStatus
+// PackageFixStatuses is a list of PackageStatus
+type PackageFixStatuses []PackageFixStatus
 
-// FormatTuiSummary format packname to show TUI summary
-func (ps PackageStatuses) FormatTuiSummary() string {
-	names := []string{}
+// Names return a slice of package names
+func (ps PackageFixStatuses) Names() (names []string) {
 	for _, p := range ps {
 		names = append(names, p.Name)
 	}
-	return strings.Join(names, ", ")
+	return names
 }
 
 // Store insert given pkg if missing, update pkg if exists
-func (ps PackageStatuses) Store(pkg PackageStatus) PackageStatuses {
+func (ps PackageFixStatuses) Store(pkg PackageFixStatus) PackageFixStatuses {
 	for i, p := range ps {
 		if p.Name == pkg.Name {
 			ps[i] = pkg
@@ -147,30 +127,110 @@ func (ps PackageStatuses) Store(pkg PackageStatus) PackageStatuses {
 }
 
 // Sort by Name
-func (ps PackageStatuses) Sort() {
+func (ps PackageFixStatuses) Sort() {
 	sort.Slice(ps, func(i, j int) bool {
 		return ps[i].Name < ps[j].Name
 	})
 	return
 }
 
-// PackageStatus has name and other status abount the package
-type PackageStatus struct {
-	Name        string `json:"name"`
-	NotFixedYet bool   `json:"notFixedYet"`
-	FixState    string `json:"fixState"`
+// PackageFixStatus has name and other status abount the package
+type PackageFixStatus struct {
+	Name        string `json:"name,omitempty"`
+	NotFixedYet bool   `json:"notFixedYet,omitempty"`
+	FixState    string `json:"fixState,omitempty"`
+	FixedIn     string `json:"fixedIn,omitempty"`
 }
 
 // VulnInfo has a vulnerability information and unsecure packages
 type VulnInfo struct {
-	CveID            string           `json:"cveID"`
-	Confidences      Confidences      `json:"confidences"`
-	AffectedPackages PackageStatuses  `json:"affectedPackages"`
-	DistroAdvisories []DistroAdvisory `json:"distroAdvisories,omitempty"` // for Aamazon, RHEL, FreeBSD
-	CpeURIs          []string         `json:"cpeURIs,omitempty"`          // CpeURIs related to this CVE defined in config.toml
-	CveContents      CveContents      `json:"cveContents"`
-	Exploits         []Exploit        `json:"exploits"`
-	AlertDict        AlertDict        `json:"alertDict"`
+	CveID                string               `json:"cveID,omitempty"`
+	Confidences          Confidences          `json:"confidences,omitempty"`
+	AffectedPackages     PackageFixStatuses   `json:"affectedPackages,omitempty"`
+	DistroAdvisories     DistroAdvisories     `json:"distroAdvisories,omitempty"` // for Aamazon, RHEL, FreeBSD
+	CveContents          CveContents          `json:"cveContents,omitempty"`
+	Exploits             []Exploit            `json:"exploits,omitempty"`
+	Metasploits          []Metasploit         `json:"metasploits,omitempty"`
+	AlertDict            AlertDict            `json:"alertDict,omitempty"`
+	CpeURIs              []string             `json:"cpeURIs,omitempty"` // CpeURIs related to this CVE defined in config.toml
+	GitHubSecurityAlerts GitHubSecurityAlerts `json:"gitHubSecurityAlerts,omitempty"`
+	WpPackageFixStats    WpPackageFixStats    `json:"wpPackageFixStats,omitempty"`
+	LibraryFixedIns      LibraryFixedIns      `json:"libraryFixedIns,omitempty"`
+
+	VulnType string `json:"vulnType,omitempty"`
+}
+
+// Alert has XCERT alert information
+type Alert struct {
+	URL   string `json:"url,omitempty"`
+	Title string `json:"title,omitempty"`
+	Team  string `json:"team,omitempty"`
+}
+
+// GitHubSecurityAlerts is a list of GitHubSecurityAlert
+type GitHubSecurityAlerts []GitHubSecurityAlert
+
+// Add adds given arg to the slice and return the slice (immutable)
+func (g GitHubSecurityAlerts) Add(alert GitHubSecurityAlert) GitHubSecurityAlerts {
+	for _, a := range g {
+		if a.PackageName == alert.PackageName {
+			return g
+		}
+	}
+	return append(g, alert)
+}
+
+// Names return a slice of lib names
+func (g GitHubSecurityAlerts) Names() (names []string) {
+	for _, a := range g {
+		names = append(names, a.PackageName)
+	}
+	return names
+}
+
+// GitHubSecurityAlert has detected CVE-ID, PackageName, Status fetched via GitHub API
+type GitHubSecurityAlert struct {
+	PackageName   string    `json:"packageName"`
+	FixedIn       string    `json:"fixedIn"`
+	AffectedRange string    `json:"affectedRange"`
+	Dismissed     bool      `json:"dismissed"`
+	DismissedAt   time.Time `json:"dismissedAt"`
+	DismissReason string    `json:"dismissReason"`
+}
+
+// LibraryFixedIns is a list of Library's FixedIn
+type LibraryFixedIns []LibraryFixedIn
+
+// Names return a slice of names
+func (lfs LibraryFixedIns) Names() (names []string) {
+	for _, lf := range lfs {
+		names = append(names, lf.Name)
+	}
+	return names
+}
+
+// WpPackageFixStats is a list of WpPackageFixStatus
+type WpPackageFixStats []WpPackageFixStatus
+
+// Names return a slice of names
+func (ws WpPackageFixStats) Names() (names []string) {
+	for _, w := range ws {
+		names = append(names, w.Name)
+	}
+	return names
+}
+
+// WpPackages has a list of WpPackage
+type WpPackages []WpPackage
+
+// Add adds given arg to the slice and return the slice (immutable)
+func (g WpPackages) Add(pkg WpPackage) WpPackages {
+	for _, a := range g {
+		if a.Name == pkg.Name {
+			return g
+		}
+	}
+	return append(g, pkg)
 }
 
 // Titles returns tilte (TUI)
@@ -186,7 +246,7 @@ func (v VulnInfo) Titles(lang, myFamily string) (values []CveContentStr) {
 		values = append(values, CveContentStr{RedHatAPI, cont.Title})
 	}
 
-	order := CveContentTypes{Nvd, NvdXML, NewCveContentType(myFamily)}
+	order := CveContentTypes{Trivy, Nvd, NvdXML, NewCveContentType(myFamily)}
 	order = append(order, AllCveContetTypes.Except(append(order, Jvn)...)...)
 	for _, ctype := range order {
 		// Only JVN has meaningful title. so return first 100 char of summary
@@ -226,7 +286,7 @@ func (v VulnInfo) Summaries(lang, myFamily string) (values []CveContentStr) {
 		}
 	}
 
-	order := CveContentTypes{Nvd, NvdXML, NewCveContentType(myFamily)}
+	order := CveContentTypes{Trivy, NewCveContentType(myFamily), Nvd, NvdXML}
 	order = append(order, AllCveContetTypes.Except(append(order, Jvn)...)...)
 	for _, ctype := range order {
 		if cont, found := v.CveContents[ctype]; found && 0 < len(cont.Summary) {
@@ -242,6 +302,13 @@ func (v VulnInfo) Summaries(lang, myFamily string) (values []CveContentStr) {
 		values = append(values, CveContentStr{
 			Type:  "Vendor",
 			Value: adv.Description,
+		})
+	}
+
+	if v, ok := v.CveContents[WPVulnDB]; ok {
+		values = append(values, CveContentStr{
+			Type:  "WPVDB",
+			Value: v.Title,
 		})
 	}
 
@@ -284,7 +351,7 @@ func (v VulnInfo) Cvss2Scores(myFamily string) (values []CveContentCvss) {
 	}
 	for _, ctype := range order {
 		if cont, found := v.CveContents[ctype]; found {
-			if cont.Cvss2Score == 0 && cont.Cvss2Severity == "" {
+			if cont.Cvss2Score == 0 || cont.Cvss2Severity == "" {
 				continue
 			}
 			// https://nvd.nist.gov/vuln-metrics/cvss
@@ -357,6 +424,18 @@ func (v VulnInfo) Cvss3Scores() (values []CveContentCvss) {
 			})
 		}
 	}
+
+	if cont, found := v.CveContents[Trivy]; found && cont.Cvss3Severity != "" {
+		values = append(values, CveContentCvss{
+			Type: Trivy,
+			Value: Cvss{
+				Type:     CVSS3,
+				Score:    severityToV2ScoreRoughly(cont.Cvss3Severity),
+				Severity: strings.ToUpper(cont.Cvss3Severity),
+			},
+		})
+	}
+
 	return
 }
 
@@ -477,16 +556,17 @@ func (v VulnInfo) MaxCvss2Score() CveContentCvss {
 func (v VulnInfo) AttackVector() string {
 	for _, cnt := range v.CveContents {
 		if strings.HasPrefix(cnt.Cvss2Vector, "AV:N") ||
-			strings.HasPrefix(cnt.Cvss3Vector, "CVSS:3.0/AV:N") {
-			return "Network"
+			strings.Contains(cnt.Cvss3Vector, "AV:N") {
+			return "AV:N"
 		} else if strings.HasPrefix(cnt.Cvss2Vector, "AV:A") ||
-			strings.HasPrefix(cnt.Cvss3Vector, "CVSS:3.0/AV:A") {
-			return "Adjacent"
+			strings.Contains(cnt.Cvss3Vector, "AV:A") {
+			return "AV:A"
 		} else if strings.HasPrefix(cnt.Cvss2Vector, "AV:L") ||
-			strings.HasPrefix(cnt.Cvss3Vector, "CVSS:3.0/AV:L") {
-			return "Local"
-		} else if strings.HasPrefix(cnt.Cvss3Vector, "CVSS:3.0/AV:P") {
-			return "Physical"
+			strings.Contains(cnt.Cvss3Vector, "AV:L") {
+			return "AV:L"
+		} else if strings.Contains(cnt.Cvss3Vector, "AV:P") {
+			// no AV:P in CVSS v2
+			return "AV:P"
 		}
 	}
 	if cont, found := v.CveContents[DebianSecurityTracker]; found {
@@ -497,7 +577,7 @@ func (v VulnInfo) AttackVector() string {
 	return ""
 }
 
-// PatchStatus returns attack vector string
+// PatchStatus returns fixed or unfixed string
 func (v VulnInfo) PatchStatus(packs Packages) string {
 	// Vuls don't know patch status of the CPE
 	if len(v.CpeURIs) != 0 {
@@ -505,17 +585,24 @@ func (v VulnInfo) PatchStatus(packs Packages) string {
 	}
 	for _, p := range v.AffectedPackages {
 		if p.NotFixedYet {
-			return "Unfixed"
+			return "unfixed"
+		}
+
+		// Fast and offline mode can not get the candidate version.
+		// Vuls can be considered as 'fixed' if not-fixed-yet==true and
+		// the fixed-in-version (information in the oval) is not an empty.
+		if p.FixedIn != "" {
+			continue
 		}
 
 		// fast, offline mode doesn't have new version
 		if pack, ok := packs[p.Name]; ok {
 			if pack.NewVersion == "" {
-				return "Unknown"
+				return "unknown"
 			}
 		}
 	}
-	return "Fixed"
+	return "fixed"
 }
 
 // CveContentCvss has CVSS information
@@ -556,15 +643,6 @@ func (c Cvss) Format() string {
 		return fmt.Sprintf("%3.1f/%s %s", c.Score, c.Vector, c.Severity)
 	}
 	return ""
-}
-
-func cvss2ScoreToSeverity(score float64) string {
-	if 7.0 <= score {
-		return "HIGH"
-	} else if 4.0 <= score {
-		return "MEDIUM"
-	}
-	return "LOW"
 }
 
 // Amazon Linux Security Advisory
@@ -615,6 +693,12 @@ func (v VulnInfo) Cvss3CalcURL() string {
 // VendorLinks returns links of vendor support's URL
 func (v VulnInfo) VendorLinks(family string) map[string]string {
 	links := map[string]string{}
+	if strings.HasPrefix(v.CveID, "WPVDBID") {
+		links["WPVulnDB"] = fmt.Sprintf("https://wpvulndb.com/vulnerabilities/%s",
+			strings.TrimPrefix(v.CveID, "WPVDBID-"))
+		return links
+	}
+
 	switch family {
 	case config.RedHat, config.CentOS:
 		links["RHEL-CVE"] = "https://access.redhat.com/security/cve/" + v.CveID
@@ -633,8 +717,14 @@ func (v VulnInfo) VendorLinks(family string) map[string]string {
 	case config.Amazon:
 		links["RHEL-CVE"] = "https://access.redhat.com/security/cve/" + v.CveID
 		for _, advisory := range v.DistroAdvisories {
-			links[advisory.AdvisoryID] =
-				fmt.Sprintf("https://alas.aws.amazon.com/%s.html", advisory.AdvisoryID)
+			if strings.HasPrefix(advisory.AdvisoryID, "ALAS2") {
+				links[advisory.AdvisoryID] =
+					fmt.Sprintf("https://alas.aws.amazon.com/AL2/%s.html",
+						strings.Replace(advisory.AdvisoryID, "ALAS2", "ALAS", -1))
+			} else {
+				links[advisory.AdvisoryID] =
+					fmt.Sprintf("https://alas.aws.amazon.com/%s.html", advisory.AdvisoryID)
+			}
 		}
 		return links
 	case config.Ubuntu:
@@ -652,6 +742,20 @@ func (v VulnInfo) VendorLinks(family string) map[string]string {
 		return links
 	}
 	return links
+}
+
+// DistroAdvisories is a list of DistroAdvisory
+type DistroAdvisories []DistroAdvisory
+
+// AppendIfMissing appends if missing
+func (advs *DistroAdvisories) AppendIfMissing(adv *DistroAdvisory) bool {
+	for _, a := range *advs {
+		if a.AdvisoryID == adv.AdvisoryID {
+			return false
+		}
+	}
+	*advs = append(*advs, *adv)
+	return true
 }
 
 // DistroAdvisory has Amazon Linux, RHEL, FreeBSD Security Advisory information.
@@ -688,15 +792,18 @@ type Exploit struct {
 	BinaryURL    *string                   `json:"binaryURL,omitempty"`
 }
 
-// AlertDict has target cve's JPCERT and USCERT alert data
-type AlertDict struct {
-	Ja []alert.Alert `json:"ja"`
-	En []alert.Alert `json:"en"`
+// Metasploit :
+type Metasploit struct {
+	Name        string   `json:"name"`
+	Title       string   `json:"title"`
+	Description string   `json:"description,omitempty"`
+	URLs        []string `json:",omitempty"`
 }
 
-// HasAlert returns whether or not it has En or Ja entries.
-func (a AlertDict) HasAlert() bool {
-	return len(a.En) != 0 || len(a.Ja) != 0
+// AlertDict has target cve's JPCERT and USCERT alert data
+type AlertDict struct {
+	Ja []Alert `json:"ja"`
+	En []Alert `json:"en"`
 }
 
 // FormatSource returns which source has this alert
@@ -768,11 +875,20 @@ const (
 	// DebianSecurityTrackerMatchStr is a String representation of DebianSecurityTrackerMatch
 	DebianSecurityTrackerMatchStr = "DebianSecurityTrackerMatch"
 
+	// TrivyMatchStr is a String representation of Trivy
+	TrivyMatchStr = "TrivyMatch"
+
 	// ChangelogExactMatchStr is a String representation of ChangelogExactMatch
 	ChangelogExactMatchStr = "ChangelogExactMatch"
 
 	// ChangelogLenientMatchStr is a String representation of ChangelogLenientMatch
 	ChangelogLenientMatchStr = "ChangelogLenientMatch"
+
+	// GitHubMatchStr is a String representation of GitHubMatch
+	GitHubMatchStr = "GitHubMatch"
+
+	// WPVulnDBMatchStr is a String representation of WordPress VulnDB scanning
+	WPVulnDBMatchStr = "WPVulnDBMatch"
 
 	// FailedToGetChangelog is a String representation of FailedToGetChangelog
 	FailedToGetChangelog = "FailedToGetChangelog"
@@ -800,9 +916,18 @@ var (
 	// DebianSecurityTrackerMatch ranking how confident the CVE-ID was deteted correctly
 	DebianSecurityTrackerMatch = Confidence{100, DebianSecurityTrackerMatchStr, 0}
 
+	// TrivyMatch ranking how confident the CVE-ID was deteted correctly
+	TrivyMatch = Confidence{100, TrivyMatchStr, 0}
+
 	// ChangelogExactMatch is a ranking how confident the CVE-ID was deteted correctly
 	ChangelogExactMatch = Confidence{95, ChangelogExactMatchStr, 3}
 
 	// ChangelogLenientMatch is a ranking how confident the CVE-ID was deteted correctly
 	ChangelogLenientMatch = Confidence{50, ChangelogLenientMatchStr, 4}
+
+	// GitHubMatch is a ranking how confident the CVE-ID was deteted correctly
+	GitHubMatch = Confidence{97, GitHubMatchStr, 2}
+
+	// WPVulnDBMatch is a ranking how confident the CVE-ID was deteted correctly
+	WPVulnDBMatch = Confidence{100, WPVulnDBMatchStr, 0}
 )
